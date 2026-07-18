@@ -2,8 +2,6 @@
 
 [中文](#中文) | [English](#english)
 
-![MiniFences desktop preview](fences6-desktop-screen.png)
-
 ## 中文
 
 MiniFences 是一款适用于 Windows 10/11 的轻量桌面分区管理器。它可以把个人桌面和公共桌面中的图标按 Fence、页面和标签组进行整理，同时保留文件原本的位置。
