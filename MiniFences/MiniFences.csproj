@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <UseWPF>true</UseWPF>
+    <UseWindowsForms>true</UseWindowsForms>
+    <AssemblyName>MiniFences</AssemblyName>
+    <RootNamespace>MiniFences</RootNamespace>
+    <Product>MiniFences</Product>
+    <Description>Windows desktop folder partition manager.</Description>
+    <ApplicationIcon>Assets\AppIcon.ico</ApplicationIcon>
+    <Version>0.20.8</Version>
+    <FileVersion>0.20.8.0</FileVersion>
+    <AssemblyVersion>0.20.8.0</AssemblyVersion>
+  </PropertyGroup>
+  <ItemGroup>
+    <Resource Include="Assets\AppIcon.ico" />
+  </ItemGroup>
+</Project>

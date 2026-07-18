@@ -1,0 +1,39 @@
+<Window x:Class="MiniFences.RenameFenceDialog"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Rename Fence"
+        Width="360"
+        Height="150"
+        WindowStartupLocation="CenterOwner"
+        ResizeMode="NoResize">
+    <Grid Margin="14">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+        </Grid.RowDefinitions>
+
+        <TextBlock x:Name="TitleLabel"
+                   Grid.Row="0"
+                   Text="Fence title"
+                   Margin="0,0,0,8" />
+        <TextBox x:Name="TitleBox"
+                 Grid.Row="1"
+                 MinWidth="300"
+                 Margin="0,0,0,14" />
+        <StackPanel Grid.Row="2"
+                    Orientation="Horizontal"
+                    HorizontalAlignment="Right">
+            <Button x:Name="OkButton"
+                    Width="80"
+                    Margin="0,0,8,0"
+                    Content="OK"
+                    IsDefault="True"
+                    Click="OkButton_Click" />
+            <Button x:Name="CancelButton"
+                    Width="80"
+                    Content="Cancel"
+                    IsCancel="True" />
+        </StackPanel>
+    </Grid>
+</Window>

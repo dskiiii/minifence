@@ -1,0 +1,28 @@
+<UserControl x:Class="MiniFences.DesktopLooseIconControl"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             Width="86" Height="92"
+             Background="Transparent"
+             MouseDoubleClick="Control_MouseDoubleClick"
+             PreviewMouseLeftButtonDown="Control_PreviewMouseLeftButtonDown"
+             PreviewMouseLeftButtonUp="Control_PreviewMouseLeftButtonUp"
+             PreviewMouseMove="Control_MouseMove"
+             PreviewMouseRightButtonDown="Control_PreviewMouseRightButtonDown">
+    <UserControl.ContextMenu>
+        <ContextMenu>
+            <MenuItem Header="Open" Click="OpenMenuItem_Click" />
+            <MenuItem Header="Show in Explorer" Click="ShowMenuItem_Click" />
+            <MenuItem Header="Rename" Click="RenameMenuItem_Click" />
+            <Separator />
+            <MenuItem Header="Delete" Click="DeleteMenuItem_Click" />
+        </ContextMenu>
+    </UserControl.ContextMenu>
+    <Border x:Name="Chrome" Padding="4" CornerRadius="4" Background="Transparent" BorderThickness="1">
+        <Grid>
+            <Grid.RowDefinitions><RowDefinition Height="54" /><RowDefinition Height="*" /></Grid.RowDefinitions>
+            <Image Width="44" Height="44" Source="{Binding Icon}" Stretch="Uniform" HorizontalAlignment="Center" />
+            <TextBlock Grid.Row="1" Text="{Binding Name}" Foreground="White" FontSize="12"
+                       TextAlignment="Center" TextWrapping="Wrap" TextTrimming="CharacterEllipsis" />
+        </Grid>
+    </Border>
+</UserControl>

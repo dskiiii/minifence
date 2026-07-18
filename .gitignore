@@ -1,0 +1,25 @@
+# Local SDK and dependency caches
+.dotnet/
+.dotnet-sdk/
+node_modules/
+
+# Build and release output
+**/bin/
+**/obj/
+artifacts/
+backups/
+
+# IDE and user-specific files
+.vs/
+.vscode/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+# Logs and temporary files
+*.log
+*.tmp
+*.temp
+Thumbs.db
+Desktop.ini

@@ -1,0 +1,62 @@
+<Window x:Class="MiniFences.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="MiniFences"
+        Width="1000"
+        Height="700"
+        WindowStartupLocation="Manual"
+        WindowStyle="None"
+        ResizeMode="NoResize"
+        AllowsTransparency="True"
+        Background="#01000000"
+        ShowActivated="False"
+        ShowInTaskbar="False">
+    <Window.ContextMenu>
+        <ContextMenu Opened="DesktopContextMenu_Opened">
+            <MenuItem x:Name="DesktopSettingsMenuItem" Header="Settings" Click="SettingsMenuItem_Click" />
+            <Separator />
+            <MenuItem x:Name="DesktopNewFenceMenuItem" Header="New Fence" Click="NewFenceMenuItem_Click" />
+            <MenuItem x:Name="DesktopNewFolderPortalMenuItem" Header="New Folder Portal..." Click="NewFolderPortalMenuItem_Click" />
+            <MenuItem x:Name="DesktopPageStatusMenuItem" Header="Page 1 / 1" IsEnabled="False" />
+            <MenuItem x:Name="DesktopPreviousPageMenuItem" Header="Previous Page" Click="PreviousPageMenuItem_Click" />
+            <MenuItem x:Name="DesktopNextPageMenuItem" Header="Next Page" Click="NextPageMenuItem_Click" />
+            <MenuItem x:Name="DesktopNewPageMenuItem" Header="New Page" Click="NewPageMenuItem_Click" />
+            <MenuItem x:Name="DesktopDeletePageMenuItem" Header="Delete Empty Current Page" Click="DeleteCurrentPageMenuItem_Click" />
+            <MenuItem x:Name="DesktopToggleFencesMenuItem" Header="Hide Fences" Click="ToggleFencesMenuItem_Click" />
+            <MenuItem x:Name="DesktopSnapToGridMenuItem" Header="Snap Fences to Grid" IsCheckable="True" Click="SnapToGridMenuItem_Click" />
+            <MenuItem x:Name="DesktopAutoLayoutMenuItem" Header="Auto arrange">
+                <MenuItem x:Name="DesktopBalancedLayoutMenuItem" Header="Balanced grid" Tag="Balanced" Click="AutoLayoutMenuItem_Click" />
+                <MenuItem x:Name="DesktopCompactLayoutMenuItem" Header="Compact grid" Tag="Compact" Click="AutoLayoutMenuItem_Click" />
+                <MenuItem x:Name="DesktopColumnsLayoutMenuItem" Header="Columns" Tag="Columns" Click="AutoLayoutMenuItem_Click" />
+                <MenuItem x:Name="DesktopRowsLayoutMenuItem" Header="Rows" Tag="Rows" Click="AutoLayoutMenuItem_Click" />
+            </MenuItem>
+            <MenuItem x:Name="DesktopRefreshAllMenuItem" Header="Refresh All" Click="RefreshAllMenuItem_Click" />
+            <Separator />
+            <MenuItem x:Name="DesktopCreateCategoryFencesMenuItem" Header="Create Category Fences" Click="CreateCategoryFencesMenuItem_Click" />
+            <MenuItem x:Name="DesktopOrganizeMenuItem" Header="Organize Desktop by Type..." Click="OrganizeDesktopMenuItem_Click" />
+            <MenuItem x:Name="DesktopUndoOrganizeMenuItem" Header="Undo Last Organize" Click="UndoLastOrganizeMenuItem_Click" />
+            <MenuItem x:Name="DesktopAutoOrganizeMenuItem" Header="Automatically Sort New Desktop Files" IsCheckable="True" Click="AutoOrganizeMenuItem_Click" />
+            <MenuItem x:Name="DesktopMigrateGroupsMenuItem" Header="Migrate Folder Categories to Desktop Groups..." Click="MigrateGroupsMenuItem_Click" />
+            <Separator />
+            <MenuItem x:Name="DesktopSaveLayoutMenuItem" Header="Save Layout Snapshot" Click="SaveLayoutSnapshotMenuItem_Click" />
+            <MenuItem x:Name="DesktopRestoreLayoutMenuItem" Header="Restore Latest Layout Snapshot" Click="RestoreLatestLayoutSnapshotMenuItem_Click" />
+            <MenuItem x:Name="DesktopLayoutsMenuItem" Header="Saved Layouts" SubmenuOpened="DesktopLayoutsMenuItem_SubmenuOpened">
+                <MenuItem x:Name="DesktopSaveNamedLayoutMenuItem" Header="Save Current Layout As..." Click="SaveNamedLayoutMenuItem_Click" />
+                <Separator />
+            </MenuItem>
+            <Separator />
+            <MenuItem x:Name="DesktopLanguageMenuItem" Header="Language">
+                <MenuItem x:Name="DesktopEnglishMenuItem" Header="English" IsCheckable="True" Click="DesktopEnglishMenuItem_Click" />
+                <MenuItem x:Name="DesktopChineseMenuItem" Header="Chinese" IsCheckable="True" Click="DesktopChineseMenuItem_Click" />
+            </MenuItem>
+            <MenuItem x:Name="DesktopExitMenuItem" Header="Exit MiniFences" Click="ExitMenuItem_Click" />
+        </ContextMenu>
+    </Window.ContextMenu>
+
+    <Canvas x:Name="Workspace"
+            Background="Transparent"
+            AllowDrop="True"
+            DragOver="Workspace_DragOver"
+            Drop="Workspace_Drop"
+            MouseLeftButtonDown="Workspace_MouseLeftButtonDown" />
+</Window>
