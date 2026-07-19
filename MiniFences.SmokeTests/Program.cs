@@ -948,6 +948,19 @@ static void TestFenceControlBindingAndLayout(string root)
             Assert(!looseIcon.IsInlineRenamingForTesting,
                 "Canceling inline rename should restore the desktop icon label.");
 
+            var shortRenameEditor = new System.Windows.Controls.TextBox { FontSize = 12 };
+            InlineRenameAppearance.Apply(shortRenameEditor, "tools");
+            var longRenameEditor = new System.Windows.Controls.TextBox { FontSize = 12 };
+            InlineRenameAppearance.Apply(longRenameEditor, "a very long desktop item name");
+            Assert(shortRenameEditor.Width < longRenameEditor.Width &&
+                   shortRenameEditor.Width >= InlineRenameAppearance.MinimumWidth &&
+                   longRenameEditor.Width == InlineRenameAppearance.MaximumWidth,
+                "Inline rename width should fit short names and cap long names at the desktop icon cell width.");
+            Assert(shortRenameEditor.SelectionOpacity < 1 &&
+                   shortRenameEditor.TextAlignment == System.Windows.TextAlignment.Left &&
+                   shortRenameEditor.BorderThickness.Left == 1,
+                "Inline rename must keep selected text readable and use a compact desktop-style border.");
+
             var watchedFilePath = Path.Combine(folder, "watcher-created.txt");
             File.WriteAllText(watchedFilePath, "watcher");
             Assert(

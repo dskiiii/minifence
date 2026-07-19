@@ -206,6 +206,7 @@ public partial class DesktopLooseIconControl : System.Windows.Controls.UserContr
         if (_isInlineRenaming) return;
         _isInlineRenaming = true;
         RenameTextBox.Text = Item.Name;
+        InlineRenameAppearance.Apply(RenameTextBox, Item.Name);
         NameText.Visibility = Visibility.Collapsed;
         RenameTextBox.Visibility = Visibility.Visible;
         RenameTextBox.Focus();

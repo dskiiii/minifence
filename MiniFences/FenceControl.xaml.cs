@@ -692,6 +692,7 @@ public partial class FenceControl : System.Windows.Controls.UserControl
         _inlineRenameLabel = label;
         _inlineRenameTextBox = editor;
         editor.Text = item.Name;
+        InlineRenameAppearance.Apply(editor, item.Name);
         label.Visibility = Visibility.Collapsed;
         editor.Visibility = Visibility.Visible;
         editor.Focus();
