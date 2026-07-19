@@ -918,6 +918,20 @@ static void TestFenceControlBindingAndLayout(string root)
                 "Equal-width tabs should divide the complete title bar into equal columns.");
             desktopGroup.StopForTesting();
 
+            var looseIcon = new DesktopLooseIconControl(new FolderItem
+            {
+                Name = "bound-folder",
+                FullPath = childFolder,
+                Kind = "Folder"
+            });
+            looseIcon.SetSelected(true);
+            looseIcon.BeginInlineRenameForTesting();
+            Assert(looseIcon.IsInlineRenamingForTesting,
+                "A selected loose desktop icon should expose an inline text editor for renaming.");
+            looseIcon.EndInlineRenameForTesting();
+            Assert(!looseIcon.IsInlineRenamingForTesting,
+                "Canceling inline rename should restore the desktop icon label.");
+
             var watchedFilePath = Path.Combine(folder, "watcher-created.txt");
             File.WriteAllText(watchedFilePath, "watcher");
             Assert(

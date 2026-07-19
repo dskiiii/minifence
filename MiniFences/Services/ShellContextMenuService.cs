@@ -53,6 +53,7 @@ public sealed class ShellContextMenuService
             menu = CreatePopupMenu();
             if (menu == IntPtr.Zero) throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
             contextMenu.QueryContextMenu(menu, 0, CommandFirst, CommandLast, CmfNormal | CmfExplore | CmfCanRename);
+            EnsureHostRenameCommand(menu, contextMenu);
 
             try { contextMenu3 = contextMenu as IContextMenu3; } catch { contextMenu3 = null; }
             if (contextMenu3 == null)
@@ -81,6 +82,13 @@ public sealed class ShellContextMenuService
             }
 
             var command = TrackPopupMenuEx(menu, TpmReturnCmd | TpmRightButton, screenPoint.X, screenPoint.Y, owner, IntPtr.Zero);
+            if (command == HostRenameCommand)
+            {
+                commandVerb = "rename";
+                commandInvoked = true;
+                return true;
+            }
+
             if (command >= CommandFirst)
             {
                 var commandOffset = command - CommandFirst;
@@ -124,6 +132,37 @@ public sealed class ShellContextMenuService
 
     internal static bool ShouldHandleCommandInHost(string? commandVerb) =>
         string.Equals(commandVerb, "rename", StringComparison.OrdinalIgnoreCase);
+
+    private static void EnsureHostRenameCommand(IntPtr menu, IContextMenu contextMenu)
+    {
+        var itemCount = GetMenuItemCount(menu);
+        if (itemCount <= 0) return;
+
+        var deletePosition = -1;
+        var propertiesPosition = -1;
+        for (var position = 0; position < itemCount; position += 1)
+        {
+            var commandId = GetMenuItemID(menu, position);
+            if (commandId < CommandFirst || commandId > CommandLast) continue;
+            var verb = TryGetCanonicalVerb(contextMenu, commandId - CommandFirst);
+            if (ShouldHandleCommandInHost(verb)) return;
+            if (string.Equals(verb, "delete", StringComparison.OrdinalIgnoreCase)) deletePosition = position;
+            if (string.Equals(verb, "properties", StringComparison.OrdinalIgnoreCase)) propertiesPosition = position;
+        }
+
+        var insertPosition = deletePosition >= 0
+            ? deletePosition + 1
+            : propertiesPosition >= 0
+                ? propertiesPosition
+                : itemCount;
+        var label = System.Globalization.CultureInfo.CurrentUICulture.TwoLetterISOLanguageName == "zh"
+            ? "重命名(&R)"
+            : "Rename(&R)";
+        if (!InsertMenu(menu, (uint)insertPosition, MfByPosition | MfString, (UIntPtr)HostRenameCommand, label))
+        {
+            AppLogger.Log($"Could not insert host Rename command into Shell menu. Win32={Marshal.GetLastWin32Error()}");
+        }
+    }
 
     private static string? TryGetCanonicalVerb(IContextMenu contextMenu, uint commandOffset)
     {
@@ -175,6 +214,7 @@ public sealed class ShellContextMenuService
 
     private const uint CommandFirst = 1;
     private const uint CommandLast = 0x7FFF;
+    private const uint HostRenameCommand = 0x8000;
     private const uint CmfNormal = 0;
     private const uint CmfExplore = 0x4;
     private const uint CmfCanRename = 0x10;
@@ -183,6 +223,8 @@ public sealed class ShellContextMenuService
     private const uint CmicUnicode = 0x4000;
     private const uint CmicPtInvoke = 0x20000000;
     private const uint GcsVerbW = 0x4;
+    private const uint MfString = 0x0;
+    private const uint MfByPosition = 0x400;
     private const int SwShowNormal = 1;
     private const int WmDrawItem = 0x002B;
     private const int WmMeasureItem = 0x002C;
@@ -261,6 +303,10 @@ public sealed class ShellContextMenuService
 
     [DllImport("user32.dll", SetLastError = true)] private static extern IntPtr CreatePopupMenu();
     [DllImport("user32.dll")] private static extern bool DestroyMenu(IntPtr menu);
+    [DllImport("user32.dll")] private static extern int GetMenuItemCount(IntPtr menu);
+    [DllImport("user32.dll")] private static extern uint GetMenuItemID(IntPtr menu, int position);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern bool InsertMenu(IntPtr menu, uint position, uint flags, UIntPtr itemId, string text);
     [DllImport("user32.dll", SetLastError = true)]
     private static extern uint TrackPopupMenuEx(IntPtr menu, uint flags, int x, int y, IntPtr owner, IntPtr parameters);
 }

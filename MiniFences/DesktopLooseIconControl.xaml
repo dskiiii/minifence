@@ -21,8 +21,26 @@
         <Grid>
             <Grid.RowDefinitions><RowDefinition Height="54" /><RowDefinition Height="*" /></Grid.RowDefinitions>
             <Image Width="44" Height="44" Source="{Binding Icon}" Stretch="Uniform" HorizontalAlignment="Center" />
-            <TextBlock Grid.Row="1" Text="{Binding Name}" Foreground="White" FontSize="12"
-                       TextAlignment="Center" TextWrapping="Wrap" TextTrimming="CharacterEllipsis" />
+            <Grid Grid.Row="1">
+                <TextBlock x:Name="NameText"
+                           Text="{Binding Name}"
+                           Foreground="White"
+                           FontSize="12"
+                           TextAlignment="Center"
+                           TextWrapping="Wrap"
+                           TextTrimming="CharacterEllipsis"
+                           MouseLeftButtonUp="NameText_MouseLeftButtonUp" />
+                <TextBox x:Name="RenameTextBox"
+                         Visibility="Collapsed"
+                         MinWidth="72"
+                         Padding="2,0"
+                         FontSize="12"
+                         TextAlignment="Center"
+                         HorizontalContentAlignment="Center"
+                         VerticalContentAlignment="Center"
+                         KeyDown="RenameTextBox_KeyDown"
+                         LostKeyboardFocus="RenameTextBox_LostKeyboardFocus" />
+            </Grid>
         </Grid>
     </Border>
 </UserControl>

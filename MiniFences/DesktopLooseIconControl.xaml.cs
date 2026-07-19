@@ -1,6 +1,7 @@
 using System.Windows;
 using System.Windows.Input;
 using System.Windows.Interop;
+using System.Windows.Threading;
 using MiniFences.Models;
 using MiniFences.Services;
 
@@ -12,6 +13,10 @@ public partial class DesktopLooseIconControl : System.Windows.Controls.UserContr
     private readonly ShellContextMenuService _shellContextMenu = new();
     private readonly LocalizationService _localization;
     private System.Windows.Point _dragStart;
+    private DispatcherTimer? _renameTimer;
+    private bool _wasSelectedBeforeLeftDown;
+    private bool _isInlineRenaming;
+    private bool _isCommittingInlineRename;
 
     public DesktopLooseIconControl(FolderItem item, LocalizationService? localization = null)
     {
@@ -24,6 +29,8 @@ public partial class DesktopLooseIconControl : System.Windows.Controls.UserContr
     public FolderItem Item { get; }
     public IReadOnlyList<string> DragPaths { get; set; } = [];
     public bool IsSelected { get; private set; }
+    internal bool IsInlineRenamingForTesting =>
+        _isInlineRenaming && RenameTextBox.Visibility == Visibility.Visible && NameText.Visibility == Visibility.Collapsed;
     public event Action<DesktopLooseIconControl, ModifierKeys>? SelectionRequested;
     public event EventHandler? ItemsChanged;
     public event EventHandler? DesktopItemDragStarted;
@@ -48,6 +55,8 @@ public partial class DesktopLooseIconControl : System.Windows.Controls.UserContr
 
     private void Control_PreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
     {
+        if (_isInlineRenaming) return;
+        _wasSelectedBeforeLeftDown = IsSelected;
         SelectionRequested?.Invoke(this, Keyboard.Modifiers);
         _dragStart = e.GetPosition(this);
         CaptureMouse();
@@ -134,6 +143,8 @@ public partial class DesktopLooseIconControl : System.Windows.Controls.UserContr
 
     private void Control_MouseDoubleClick(object sender, MouseButtonEventArgs e)
     {
+        CancelPendingInlineRename();
+        if (_isInlineRenaming) return;
         Open();
         e.Handled = true;
     }
@@ -159,17 +170,102 @@ public partial class DesktopLooseIconControl : System.Windows.Controls.UserContr
 
     private void RenameItem()
     {
-        var dialog = new RenameFenceDialog(Item.Name, _localization, "RenameItem", "ItemName", "ItemNameCannotBeEmpty")
+        BeginInlineRename();
+    }
+
+    private void NameText_MouseLeftButtonUp(object sender, MouseButtonEventArgs e)
+    {
+        if (!_wasSelectedBeforeLeftDown || !IsSelected || _isInlineRenaming) return;
+        CancelPendingInlineRename();
+        _renameTimer = new DispatcherTimer
         {
-            Owner = Window.GetWindow(this)
+            Interval = TimeSpan.FromMilliseconds(System.Windows.Forms.SystemInformation.DoubleClickTime + 50)
         };
-        if (dialog.ShowDialog() != true) return;
-        if (!_service.TryRenameItem(Item, dialog.InputText, out _, out var error))
+        _renameTimer.Tick += (_, _) =>
         {
-            System.Windows.MessageBox.Show(error, "MiniFences", MessageBoxButton.OK, MessageBoxImage.Warning);
-            return;
+            CancelPendingInlineRename();
+            if (IsSelected && Mouse.LeftButton == MouseButtonState.Released) BeginInlineRename();
+        };
+        _renameTimer.Start();
+        e.Handled = true;
+    }
+
+    private void BeginInlineRename()
+    {
+        CancelPendingInlineRename();
+        if (_isInlineRenaming) return;
+        _isInlineRenaming = true;
+        RenameTextBox.Text = Item.Name;
+        NameText.Visibility = Visibility.Collapsed;
+        RenameTextBox.Visibility = Visibility.Visible;
+        RenameTextBox.Focus();
+        RenameTextBox.SelectAll();
+    }
+
+    internal void BeginInlineRenameForTesting() => BeginInlineRename();
+    internal void EndInlineRenameForTesting() => EndInlineRename();
+
+    private void RenameTextBox_KeyDown(object sender, System.Windows.Input.KeyEventArgs e)
+    {
+        if (e.Key == Key.Enter)
+        {
+            CommitInlineRename();
+            e.Handled = true;
         }
-        ItemsChanged?.Invoke(this, EventArgs.Empty);
+        else if (e.Key == Key.Escape)
+        {
+            EndInlineRename();
+            e.Handled = true;
+        }
+    }
+
+    private void RenameTextBox_LostKeyboardFocus(object sender, KeyboardFocusChangedEventArgs e)
+    {
+        if (_isInlineRenaming) CommitInlineRename();
+    }
+
+    private void CommitInlineRename()
+    {
+        if (!_isInlineRenaming || _isCommittingInlineRename) return;
+        _isCommittingInlineRename = true;
+        try
+        {
+            var newName = RenameTextBox.Text.Trim();
+            if (string.IsNullOrWhiteSpace(newName))
+            {
+                System.Windows.MessageBox.Show(_localization.T("ItemNameCannotBeEmpty"), "MiniFences", MessageBoxButton.OK, MessageBoxImage.Warning);
+                RenameTextBox.Focus();
+                return;
+            }
+
+            if (!_service.TryRenameItem(Item, newName, out _, out var error))
+            {
+                System.Windows.MessageBox.Show(error, "MiniFences", MessageBoxButton.OK, MessageBoxImage.Warning);
+                RenameTextBox.Focus();
+                RenameTextBox.SelectAll();
+                return;
+            }
+
+            EndInlineRename();
+            ItemsChanged?.Invoke(this, EventArgs.Empty);
+        }
+        finally
+        {
+            _isCommittingInlineRename = false;
+        }
+    }
+
+    private void EndInlineRename()
+    {
+        _isInlineRenaming = false;
+        RenameTextBox.Visibility = Visibility.Collapsed;
+        NameText.Visibility = Visibility.Visible;
+    }
+
+    private void CancelPendingInlineRename()
+    {
+        _renameTimer?.Stop();
+        _renameTimer = null;
     }
 
     private void DeleteMenuItem_Click(object sender, RoutedEventArgs e)
