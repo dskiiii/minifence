@@ -63,6 +63,7 @@ public partial class FenceControl : System.Windows.Controls.UserControl
     public event EventHandler<DesktopItemsReleasedEventArgs>? DesktopItemsReleased;
     public event EventHandler? DesktopItemDragStarted;
     public event EventHandler? DesktopItemDragEnded;
+    public event EventHandler? ItemsChanged;
     public event EventHandler? HeaderDragCompleted;
     public event EventHandler? HeaderDragMoved;
     public event EventHandler? HeaderDragCanceled;
@@ -815,6 +816,64 @@ public partial class FenceControl : System.Windows.Controls.UserControl
     private void Item_MouseMove(object sender, System.Windows.Input.MouseEventArgs e)
     {
         TryStartItemDrag(e);
+    }
+
+    private void Item_DragOver(object sender, System.Windows.DragEventArgs e)
+    {
+        if (sender is not System.Windows.Controls.ListViewItem { DataContext: FolderItem target } ||
+            !System.IO.Directory.Exists(target.FullPath) ||
+            !TryGetDroppedFiles(e, out var paths)) return;
+
+        e.Effects = CanMoveIntoFolder(paths, target.FullPath)
+            ? System.Windows.DragDropEffects.Move
+            : System.Windows.DragDropEffects.None;
+        e.Handled = true;
+    }
+
+    private void Item_Drop(object sender, System.Windows.DragEventArgs e)
+    {
+        if (sender is not System.Windows.Controls.ListViewItem { DataContext: FolderItem target } ||
+            !System.IO.Directory.Exists(target.FullPath) ||
+            !TryGetDroppedFiles(e, out var paths)) return;
+
+        e.Handled = true;
+        if (!CanMoveIntoFolder(paths, target.FullPath))
+        {
+            e.Effects = System.Windows.DragDropEffects.None;
+            return;
+        }
+
+        var result = _folderItemService.MoveIntoFolder(paths, target.FullPath);
+        e.Effects = result.Moved > 0 ? System.Windows.DragDropEffects.Move : System.Windows.DragDropEffects.None;
+        AppLogger.Log($"Folder icon drop completed. Destination={target.FullPath}; Moved={result.Moved}; Skipped={result.Skipped}; Errors={result.Errors.Count}");
+        if (result.Errors.Count > 0 || result.Skipped > 0)
+        {
+            System.Windows.MessageBox.Show(BuildMoveSummary(result), "MiniFences", MessageBoxButton.OK,
+                result.Errors.Count > 0 ? MessageBoxImage.Warning : MessageBoxImage.Information);
+        }
+
+        LoadFolderItems();
+        ItemsChanged?.Invoke(this, EventArgs.Empty);
+    }
+
+    internal static bool CanMoveIntoFolder(IEnumerable<string> sourcePaths, string destinationFolder)
+    {
+        if (string.IsNullOrWhiteSpace(destinationFolder) || !System.IO.Directory.Exists(destinationFolder)) return false;
+        var destination = System.IO.Path.GetFullPath(destinationFolder).TrimEnd(System.IO.Path.DirectorySeparatorChar);
+        return sourcePaths.Any(path =>
+        {
+            if (string.IsNullOrWhiteSpace(path)) return false;
+            try
+            {
+                var source = System.IO.Path.GetFullPath(path).TrimEnd(System.IO.Path.DirectorySeparatorChar);
+                return !string.Equals(source, destination, StringComparison.OrdinalIgnoreCase) &&
+                       (System.IO.File.Exists(source) || System.IO.Directory.Exists(source));
+            }
+            catch
+            {
+                return false;
+            }
+        });
     }
 
     private void ItemsList_PreviewMouseMove(object sender, System.Windows.Input.MouseEventArgs e)

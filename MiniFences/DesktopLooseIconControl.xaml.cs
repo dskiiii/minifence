@@ -146,6 +146,36 @@ public partial class DesktopLooseIconControl : System.Windows.Controls.UserContr
         AppLogger.Log($"Loose desktop icon drag completed. Result={result}; Path={Item.FullPath}");
     }
 
+    private void Control_DragOver(object sender, System.Windows.DragEventArgs e)
+    {
+        if (!System.IO.Directory.Exists(Item.FullPath) || !DesktopDragData.TryGetPaths(e.Data, out var paths)) return;
+        e.Effects = FenceControl.CanMoveIntoFolder(paths, Item.FullPath)
+            ? System.Windows.DragDropEffects.Move
+            : System.Windows.DragDropEffects.None;
+        e.Handled = true;
+    }
+
+    private void Control_Drop(object sender, System.Windows.DragEventArgs e)
+    {
+        if (!System.IO.Directory.Exists(Item.FullPath) || !DesktopDragData.TryGetPaths(e.Data, out var paths)) return;
+        e.Handled = true;
+        if (!FenceControl.CanMoveIntoFolder(paths, Item.FullPath))
+        {
+            e.Effects = System.Windows.DragDropEffects.None;
+            return;
+        }
+
+        var result = _service.MoveIntoFolder(paths, Item.FullPath);
+        e.Effects = result.Moved > 0 ? System.Windows.DragDropEffects.Move : System.Windows.DragDropEffects.None;
+        AppLogger.Log($"Loose folder icon drop completed. Destination={Item.FullPath}; Moved={result.Moved}; Skipped={result.Skipped}; Errors={result.Errors.Count}");
+        if (result.Errors.Count > 0)
+        {
+            System.Windows.MessageBox.Show(string.Join(Environment.NewLine, result.Errors), "MiniFences", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+
+        ItemsChanged?.Invoke(this, EventArgs.Empty);
+    }
+
     private static bool IsPointInside(FrameworkElement element, System.Windows.Point screenPoint)
     {
         try

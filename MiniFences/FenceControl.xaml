@@ -167,6 +167,7 @@
                     </ListView.ContextMenu>
                     <ListView.ItemContainerStyle>
                         <Style TargetType="ListViewItem">
+                            <Setter Property="AllowDrop" Value="True" />
                             <Setter Property="Width" Value="86" />
                             <Setter Property="Height" Value="92" />
                             <Setter Property="Margin" Value="4" />
@@ -205,6 +206,8 @@
                             <EventSetter Event="PreviewMouseLeftButtonUp" Handler="Item_PreviewMouseLeftButtonUp" />
                             <EventSetter Event="MouseMove" Handler="Item_MouseMove" />
                             <EventSetter Event="PreviewMouseRightButtonDown" Handler="Item_PreviewMouseRightButtonDown" />
+                            <EventSetter Event="DragOver" Handler="Item_DragOver" />
+                            <EventSetter Event="Drop" Handler="Item_Drop" />
                         </Style>
                     </ListView.ItemContainerStyle>
                     <ListView.ItemTemplate>

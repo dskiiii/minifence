@@ -394,6 +394,7 @@ public partial class MainWindow : Window
             DispatcherPriority.Background);
         control.DesktopItemDragStarted += (_, _) => BeginDesktopItemDrag();
         control.DesktopItemDragEnded += (_, _) => EndDesktopItemDrag();
+        control.ItemsChanged += (_, _) => Dispatcher.BeginInvoke(RenderFences, DispatcherPriority.Background);
         control.ItemSelectionRequested += (_, _) => HandleFenceItemSelection(control);
         control.HeaderDragCompleted += (_, _) => HandleHeaderDragCompleted(control);
         control.HeaderDragMoved += (_, _) =>

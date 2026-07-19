@@ -974,6 +974,9 @@ static void TestFenceControlBindingAndLayout(string root)
                    MainWindow.ReorderFenceItems(["A", "B", "C"], ["C"], 0)
                     .SequenceEqual(["C", "A", "B"], StringComparer.OrdinalIgnoreCase),
                 "Dragging Fence icons must persist their insertion order instead of snapping back to a fixed sort.");
+            Assert(FenceControl.CanMoveIntoFolder([filePath], childFolder) &&
+                   !FenceControl.CanMoveIntoFolder([childFolder], childFolder),
+                "Folder icons should accept existing items but reject being dropped onto themselves.");
 
             var watchedFilePath = Path.Combine(folder, "watcher-created.txt");
             File.WriteAllText(watchedFilePath, "watcher");
