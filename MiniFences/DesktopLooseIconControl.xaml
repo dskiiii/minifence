@@ -23,7 +23,7 @@
     <Border x:Name="Chrome" Padding="4" CornerRadius="4" Background="Transparent" BorderThickness="1">
         <Grid>
             <Grid.RowDefinitions><RowDefinition Height="54" /><RowDefinition Height="*" /></Grid.RowDefinitions>
-            <Image Width="44" Height="44" Source="{Binding Icon}" Stretch="Uniform" HorizontalAlignment="Center" />
+            <Image x:Name="IconImage" Width="44" Height="44" Source="{Binding Icon}" Stretch="Uniform" HorizontalAlignment="Center" />
             <Grid Grid.Row="1">
                 <TextBlock x:Name="NameText"
                            Text="{Binding Name}"

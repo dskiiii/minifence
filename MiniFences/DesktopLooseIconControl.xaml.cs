@@ -148,7 +148,9 @@ public partial class DesktopLooseIconControl : System.Windows.Controls.UserContr
 
     private void Control_DragOver(object sender, System.Windows.DragEventArgs e)
     {
-        if (!System.IO.Directory.Exists(Item.FullPath) || !DesktopDragData.TryGetPaths(e.Data, out var paths)) return;
+        if (!System.IO.Directory.Exists(Item.FullPath) ||
+            !DesktopDragData.TryGetPaths(e.Data, out var paths) ||
+            !FenceControl.IsFolderIconHotZone(e.GetPosition(IconImage), IconImage.RenderSize)) return;
         e.Effects = FenceControl.CanMoveIntoFolder(paths, Item.FullPath)
             ? System.Windows.DragDropEffects.Move
             : System.Windows.DragDropEffects.None;
@@ -157,7 +159,9 @@ public partial class DesktopLooseIconControl : System.Windows.Controls.UserContr
 
     private void Control_Drop(object sender, System.Windows.DragEventArgs e)
     {
-        if (!System.IO.Directory.Exists(Item.FullPath) || !DesktopDragData.TryGetPaths(e.Data, out var paths)) return;
+        if (!System.IO.Directory.Exists(Item.FullPath) ||
+            !DesktopDragData.TryGetPaths(e.Data, out var paths) ||
+            !FenceControl.IsFolderIconHotZone(e.GetPosition(IconImage), IconImage.RenderSize)) return;
         e.Handled = true;
         if (!FenceControl.CanMoveIntoFolder(paths, Item.FullPath))
         {

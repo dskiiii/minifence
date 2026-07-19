@@ -820,9 +820,10 @@ public partial class FenceControl : System.Windows.Controls.UserControl
 
     private void Item_DragOver(object sender, System.Windows.DragEventArgs e)
     {
-        if (sender is not System.Windows.Controls.ListViewItem { DataContext: FolderItem target } ||
+        if (sender is not System.Windows.Controls.ListViewItem { DataContext: FolderItem target } container ||
             !System.IO.Directory.Exists(target.FullPath) ||
-            !TryGetDroppedFiles(e, out var paths)) return;
+            !TryGetDroppedFiles(e, out var paths) ||
+            !IsPointerOverFolderIcon(container, e)) return;
 
         e.Effects = CanMoveIntoFolder(paths, target.FullPath)
             ? System.Windows.DragDropEffects.Move
@@ -832,9 +833,10 @@ public partial class FenceControl : System.Windows.Controls.UserControl
 
     private void Item_Drop(object sender, System.Windows.DragEventArgs e)
     {
-        if (sender is not System.Windows.Controls.ListViewItem { DataContext: FolderItem target } ||
+        if (sender is not System.Windows.Controls.ListViewItem { DataContext: FolderItem target } container ||
             !System.IO.Directory.Exists(target.FullPath) ||
-            !TryGetDroppedFiles(e, out var paths)) return;
+            !TryGetDroppedFiles(e, out var paths) ||
+            !IsPointerOverFolderIcon(container, e)) return;
 
         e.Handled = true;
         if (!CanMoveIntoFolder(paths, target.FullPath))
@@ -854,6 +856,22 @@ public partial class FenceControl : System.Windows.Controls.UserControl
 
         LoadFolderItems();
         ItemsChanged?.Invoke(this, EventArgs.Empty);
+    }
+
+    private static bool IsPointerOverFolderIcon(System.Windows.Controls.ListViewItem container, System.Windows.DragEventArgs e)
+    {
+        var image = FindVisualChild<System.Windows.Controls.Image>(container);
+        return image != null && IsFolderIconHotZone(e.GetPosition(image), image.RenderSize);
+    }
+
+    internal static bool IsFolderIconHotZone(System.Windows.Point point, System.Windows.Size iconSize)
+    {
+        const double tolerance = 6;
+        return new Rect(
+            -tolerance,
+            -tolerance,
+            iconSize.Width + tolerance * 2,
+            iconSize.Height + tolerance * 2).Contains(point);
     }
 
     internal static bool CanMoveIntoFolder(IEnumerable<string> sourcePaths, string destinationFolder)
@@ -2067,6 +2085,19 @@ public partial class FenceControl : System.Windows.Controls.UserControl
             }
 
             source = VisualTreeHelper.GetParent(source);
+        }
+
+        return null;
+    }
+
+    private static T? FindVisualChild<T>(DependencyObject parent) where T : DependencyObject
+    {
+        for (var index = 0; index < VisualTreeHelper.GetChildrenCount(parent); index += 1)
+        {
+            var child = VisualTreeHelper.GetChild(parent, index);
+            if (child is T match) return match;
+            var descendant = FindVisualChild<T>(child);
+            if (descendant != null) return descendant;
         }
 
         return null;

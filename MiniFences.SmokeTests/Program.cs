@@ -980,6 +980,9 @@ static void TestFenceControlBindingAndLayout(string root)
             Assert(FenceControl.CanMoveIntoFolder([filePath], childFolder) &&
                    !FenceControl.CanMoveIntoFolder([childFolder], childFolder),
                 "Folder icons should accept existing items but reject being dropped onto themselves.");
+            Assert(FenceControl.IsFolderIconHotZone(new System.Windows.Point(21, 21), new System.Windows.Size(42, 42)) &&
+                   !FenceControl.IsFolderIconHotZone(new System.Windows.Point(21, 70), new System.Windows.Size(42, 42)),
+                "Only the folder image itself should accept file moves; its label and surrounding cell must remain available for manual ordering.");
 
             var watchedFilePath = Path.Combine(folder, "watcher-created.txt");
             File.WriteAllText(watchedFilePath, "watcher");
