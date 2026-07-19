@@ -209,8 +209,15 @@ public partial class DesktopLooseIconControl : System.Windows.Controls.UserContr
         InlineRenameAppearance.Apply(RenameTextBox, Item.Name);
         NameText.Visibility = Visibility.Collapsed;
         RenameTextBox.Visibility = Visibility.Visible;
-        RenameTextBox.Focus();
-        RenameTextBox.SelectAll();
+        if (Window.GetWindow(this) is MainWindow mainWindow)
+        {
+            mainWindow.FocusInlineRenameEditor(RenameTextBox);
+        }
+        else
+        {
+            RenameTextBox.Focus();
+            RenameTextBox.SelectAll();
+        }
     }
 
     internal void BeginInlineRenameForTesting() => BeginInlineRename();
@@ -292,6 +299,10 @@ public partial class DesktopLooseIconControl : System.Windows.Controls.UserContr
         _isInlineRenaming = false;
         RenameTextBox.Visibility = Visibility.Collapsed;
         NameText.Visibility = Visibility.Visible;
+        if (Window.GetWindow(this) is MainWindow mainWindow)
+        {
+            mainWindow.ReleaseInlineRenameEditor(RenameTextBox);
+        }
     }
 
     private void CancelPendingInlineRename()

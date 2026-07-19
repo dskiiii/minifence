@@ -695,8 +695,15 @@ public partial class FenceControl : System.Windows.Controls.UserControl
         InlineRenameAppearance.Apply(editor, item.Name);
         label.Visibility = Visibility.Collapsed;
         editor.Visibility = Visibility.Visible;
-        editor.Focus();
-        editor.SelectAll();
+        if (Window.GetWindow(this) is MainWindow mainWindow)
+        {
+            mainWindow.FocusInlineRenameEditor(editor);
+        }
+        else
+        {
+            editor.Focus();
+            editor.SelectAll();
+        }
     }
 
     private void ItemRenameTextBox_KeyDown(object sender, System.Windows.Input.KeyEventArgs e)
@@ -778,11 +785,16 @@ public partial class FenceControl : System.Windows.Controls.UserControl
 
     private void EndInlineRename()
     {
-        if (_inlineRenameTextBox != null) _inlineRenameTextBox.Visibility = Visibility.Collapsed;
+        var editor = _inlineRenameTextBox;
+        if (editor != null) editor.Visibility = Visibility.Collapsed;
         if (_inlineRenameLabel != null) _inlineRenameLabel.Visibility = Visibility.Visible;
         _inlineRenameItem = null;
         _inlineRenameLabel = null;
         _inlineRenameTextBox = null;
+        if (editor != null && Window.GetWindow(this) is MainWindow mainWindow)
+        {
+            mainWindow.ReleaseInlineRenameEditor(editor);
+        }
     }
 
     private void CancelPendingInlineRename()

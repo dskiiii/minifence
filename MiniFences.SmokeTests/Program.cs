@@ -964,6 +964,10 @@ static void TestFenceControlBindingAndLayout(string root)
                    shortRenameEditor.TextAlignment == System.Windows.TextAlignment.Left &&
                    shortRenameEditor.BorderThickness.Left == 1,
                 "Inline rename must keep selected text readable and use a compact desktop-style border.");
+            const long noActivateStyle = 0x08000000L;
+            Assert(MainWindow.UpdateInlineRenameActivationStyle(noActivateStyle, enabled: true) == 0 &&
+                   MainWindow.UpdateInlineRenameActivationStyle(0, enabled: false) == noActivateStyle,
+                "Inline rename must temporarily enable window activation for keyboard input and restore it afterward.");
 
             var watchedFilePath = Path.Combine(folder, "watcher-created.txt");
             File.WriteAllText(watchedFilePath, "watcher");

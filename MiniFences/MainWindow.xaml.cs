@@ -67,6 +67,7 @@ public partial class MainWindow : Window
     private FenceControl? _mergePreviewSource;
     private readonly HashSet<string> _selectedLoosePaths = new(StringComparer.OrdinalIgnoreCase);
     private string? _looseSelectionAnchor;
+    private System.Windows.Controls.TextBox? _activeInlineRenameEditor;
 
     public MainWindow(bool openSettingsOnLoad = false)
     {
@@ -1863,6 +1864,62 @@ public partial class MainWindow : Window
         }
     }
 
+    internal void FocusInlineRenameEditor(System.Windows.Controls.TextBox editor)
+    {
+        _activeInlineRenameEditor = editor;
+        SetInlineRenameWindowActivation(true);
+
+        var handle = new WindowInteropHelper(this).Handle;
+        var activated = Activate();
+        var foregroundResult = handle != IntPtr.Zero && SetForegroundWindow(handle);
+        var nativeFocusResult = handle == IntPtr.Zero ? IntPtr.Zero : SetFocus(handle);
+        Dispatcher.BeginInvoke(() =>
+        {
+            if (!ReferenceEquals(_activeInlineRenameEditor, editor) || !editor.IsVisible) return;
+            var wpfFocused = editor.Focus();
+            Keyboard.Focus(editor);
+            editor.SelectAll();
+            AppLogger.Log($"Inline rename focus requested. Activated={activated}; Foreground={foregroundResult}; WpfFocused={wpfFocused}; NativePreviousFocus=0x{nativeFocusResult.ToInt64():X}");
+        }, DispatcherPriority.Input);
+    }
+
+    internal void ReleaseInlineRenameEditor(System.Windows.Controls.TextBox editor)
+    {
+        if (!ReferenceEquals(_activeInlineRenameEditor, editor)) return;
+        _activeInlineRenameEditor = null;
+        if (editor.IsKeyboardFocusWithin) Keyboard.ClearFocus();
+        SetInlineRenameWindowActivation(false);
+    }
+
+    private void SetInlineRenameWindowActivation(bool enabled)
+    {
+        try
+        {
+            var handle = new WindowInteropHelper(this).Handle;
+            if (handle == IntPtr.Zero) return;
+            var extendedStyle = GetWindowLongPtr(handle, GwlExStyle).ToInt64();
+            var updatedStyle = UpdateInlineRenameActivationStyle(extendedStyle, enabled);
+            if (updatedStyle == extendedStyle) return;
+
+            SetWindowLongPtr(handle, GwlExStyle, new IntPtr(updatedStyle));
+            SetWindowPos(
+                handle,
+                IntPtr.Zero,
+                0,
+                0,
+                0,
+                0,
+                SwpNoMove | SwpNoSize | SwpNoActivate | SwpNoZOrder | SwpFrameChanged);
+        }
+        catch (Exception ex)
+        {
+            AppLogger.LogException("Failed to switch inline rename activation mode", ex);
+        }
+    }
+
+    internal static long UpdateInlineRenameActivationStyle(long extendedStyle, bool enabled) =>
+        enabled ? extendedStyle & ~WsExNoActivate : extendedStyle | WsExNoActivate;
+
     private static IntPtr FindDesktopViewHost()
     {
         var programManager = FindWindow("Progman", null);
@@ -3384,6 +3441,13 @@ public partial class MainWindow : Window
         int cx,
         int cy,
         uint flags);
+
+    [DllImport("User32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool SetForegroundWindow(IntPtr hWnd);
+
+    [DllImport("User32.dll")]
+    private static extern IntPtr SetFocus(IntPtr hWnd);
 
     [DllImport("User32.dll", SetLastError = true)]
     private static extern bool RegisterHotKey(IntPtr window, int id, uint modifiers, uint virtualKey);
