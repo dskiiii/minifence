@@ -39,6 +39,12 @@ public partial class FenceControl : System.Windows.Controls.UserControl
     private bool _isMergeCompactPreview;
     private bool _shiftDetachHeaderDrag;
     private bool _shiftHeaderDrag;
+    private bool _wasItemSelectedBeforeLeftDown;
+    private DispatcherTimer? _inlineRenameTimer;
+    private FolderItem? _inlineRenameItem;
+    private TextBlock? _inlineRenameLabel;
+    private System.Windows.Controls.TextBox? _inlineRenameTextBox;
+    private bool _isCommittingInlineRename;
 
     public event EventHandler? Changed;
     public event EventHandler? NewFenceRequested;
@@ -60,6 +66,7 @@ public partial class FenceControl : System.Windows.Controls.UserControl
     public event EventHandler? HeaderDragCompleted;
     public event EventHandler? HeaderDragMoved;
     public event EventHandler? HeaderDragCanceled;
+    public event EventHandler? ItemSelectionRequested;
 
     public FenceConfig Config { get; }
     public bool SnapToGrid { get; set; }
@@ -93,6 +100,7 @@ public partial class FenceControl : System.Windows.Controls.UserControl
     internal bool HasFolderWatcherForTesting => _folderWatcher != null;
     internal IReadOnlyList<GridLength> TabColumnWidthsForTesting =>
         TabStripPanel.ColumnDefinitions.Select(column => column.Width).ToArray();
+    internal int SelectedItemCountForTesting => ItemsList.SelectedItems.Count;
     internal void SetHoverExpandedForTesting(bool expanded) => SetHoverExpanded(expanded);
     internal void SetHoverExpandedFromDesktopHost(bool expanded) => SetHoverExpanded(expanded);
 
@@ -539,6 +547,8 @@ public partial class FenceControl : System.Windows.Controls.UserControl
             return;
         }
 
+        CancelPendingInlineRename();
+
         if (e.OriginalSource is not DependencyObject source)
         {
             AppLogger.Log("Double-click ignored because the mouse source was not a DependencyObject.");
@@ -562,6 +572,7 @@ public partial class FenceControl : System.Windows.Controls.UserControl
 
     private void Item_MouseDoubleClick(object sender, MouseButtonEventArgs e)
     {
+        CancelPendingInlineRename();
         if (sender is not System.Windows.Controls.ListViewItem { DataContext: FolderItem item })
         {
             return;
@@ -582,6 +593,15 @@ public partial class FenceControl : System.Windows.Controls.UserControl
             return;
         }
 
+        if (e.OriginalSource is DependencyObject originalSource &&
+            FindVisualParent<System.Windows.Controls.TextBox>(originalSource) != null)
+        {
+            _pendingDragItem = null;
+            return;
+        }
+
+        ItemSelectionRequested?.Invoke(this, EventArgs.Empty);
+        _wasItemSelectedBeforeLeftDown = container.IsSelected;
         _pendingDragItem = item;
         _pendingDragStart = e.GetPosition(this);
         var itemIndex = ItemsList.ItemContainerGenerator.IndexFromContainer(container);
@@ -621,6 +641,15 @@ public partial class FenceControl : System.Windows.Controls.UserControl
 
     private void Item_PreviewMouseLeftButtonUp(object sender, MouseButtonEventArgs e)
     {
+        if (e.OriginalSource is DependencyObject source &&
+            FindVisualParent<TextBlock>(source) is { DataContext: FolderItem labelItem } label &&
+            _wasItemSelectedBeforeLeftDown &&
+            ItemsList.SelectedItems.Contains(labelItem))
+        {
+            ScheduleInlineRename(labelItem, label);
+            e.Handled = true;
+        }
+
         if (_preserveSelectionForPotentialDrag &&
             _pendingDragItem != null &&
             sender is System.Windows.Controls.ListViewItem container)
@@ -632,6 +661,117 @@ public partial class FenceControl : System.Windows.Controls.UserControl
         _preserveSelectionForPotentialDrag = false;
         _pendingDragItem = null;
     }
+
+    private void ScheduleInlineRename(FolderItem item, TextBlock label)
+    {
+        CancelPendingInlineRename();
+        _inlineRenameTimer = new DispatcherTimer
+        {
+            Interval = TimeSpan.FromMilliseconds(System.Windows.Forms.SystemInformation.DoubleClickTime + 50)
+        };
+        _inlineRenameTimer.Tick += (_, _) =>
+        {
+            CancelPendingInlineRename();
+            if (ItemsList.SelectedItems.Contains(item) && Mouse.LeftButton == MouseButtonState.Released)
+            {
+                BeginInlineRename(item, label);
+            }
+        };
+        _inlineRenameTimer.Start();
+    }
+
+    private void BeginInlineRename(FolderItem item, TextBlock label)
+    {
+        CancelPendingInlineRename();
+        if (_inlineRenameItem != null) CommitInlineRename();
+        if (VisualTreeHelper.GetParent(label) is not Grid grid) return;
+        var editor = grid.Children.OfType<System.Windows.Controls.TextBox>().FirstOrDefault();
+        if (editor == null) return;
+
+        _inlineRenameItem = item;
+        _inlineRenameLabel = label;
+        _inlineRenameTextBox = editor;
+        editor.Text = item.Name;
+        label.Visibility = Visibility.Collapsed;
+        editor.Visibility = Visibility.Visible;
+        editor.Focus();
+        editor.SelectAll();
+    }
+
+    private void ItemRenameTextBox_KeyDown(object sender, System.Windows.Input.KeyEventArgs e)
+    {
+        if (e.Key == Key.Enter)
+        {
+            CommitInlineRename();
+            e.Handled = true;
+        }
+        else if (e.Key == Key.Escape)
+        {
+            EndInlineRename();
+            e.Handled = true;
+        }
+    }
+
+    private void ItemRenameTextBox_LostKeyboardFocus(object sender, KeyboardFocusChangedEventArgs e)
+    {
+        if (_inlineRenameItem != null) CommitInlineRename();
+    }
+
+    private void CommitInlineRename()
+    {
+        if (_inlineRenameItem == null || _inlineRenameTextBox == null || _isCommittingInlineRename) return;
+        _isCommittingInlineRename = true;
+        try
+        {
+            var item = _inlineRenameItem;
+            var editor = _inlineRenameTextBox;
+            var newName = editor.Text.Trim();
+            if (string.IsNullOrWhiteSpace(newName))
+            {
+                System.Windows.MessageBox.Show(_loc.T("ItemNameCannotBeEmpty"), "MiniFences", MessageBoxButton.OK, MessageBoxImage.Warning);
+                editor.Focus();
+                return;
+            }
+
+            if (!_folderItemService.TryRenameItem(item, newName, out _, out var error))
+            {
+                System.Windows.MessageBox.Show(FormatFileOperationError(error, "CouldNotRenameItem"), "MiniFences", MessageBoxButton.OK, MessageBoxImage.Warning);
+                editor.Focus();
+                editor.SelectAll();
+                return;
+            }
+
+            EndInlineRename();
+            LoadFolderItems();
+        }
+        finally
+        {
+            _isCommittingInlineRename = false;
+        }
+    }
+
+    private void EndInlineRename()
+    {
+        if (_inlineRenameTextBox != null) _inlineRenameTextBox.Visibility = Visibility.Collapsed;
+        if (_inlineRenameLabel != null) _inlineRenameLabel.Visibility = Visibility.Visible;
+        _inlineRenameItem = null;
+        _inlineRenameLabel = null;
+        _inlineRenameTextBox = null;
+    }
+
+    private void CancelPendingInlineRename()
+    {
+        _inlineRenameTimer?.Stop();
+        _inlineRenameTimer = null;
+    }
+
+    public void ClearItemSelection()
+    {
+        ItemsList.SelectedItems.Clear();
+        _selectionAnchorIndex = -1;
+    }
+
+    internal void SelectItemForTesting(int index) => ItemsList.SelectedIndex = index;
 
     private void Item_MouseMove(object sender, System.Windows.Input.MouseEventArgs e)
     {
@@ -747,6 +887,7 @@ public partial class FenceControl : System.Windows.Controls.UserControl
             ItemsList.SelectedItems.Clear();
         }
 
+        ItemSelectionRequested?.Invoke(this, EventArgs.Empty);
         item.IsSelected = true;
         item.Focus();
     }

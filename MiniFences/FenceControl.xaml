@@ -224,16 +224,26 @@
                                            Stretch="Uniform"
                                            HorizontalAlignment="Center"
                                            VerticalAlignment="Center" />
-                                    <TextBlock Grid.Row="1"
-                                               Text="{Binding Name}"
-                                               Foreground="White"
-                                               FontSize="12"
-                                               TextAlignment="Center"
-                                               TextWrapping="Wrap"
-                                               TextTrimming="CharacterEllipsis"
-                                               LineHeight="15"
-                                               MaxHeight="34"
-                                               VerticalAlignment="Top" />
+                                    <Grid Grid.Row="1">
+                                        <TextBlock Text="{Binding Name}"
+                                                   Foreground="White"
+                                                   FontSize="12"
+                                                   TextAlignment="Center"
+                                                   TextWrapping="Wrap"
+                                                   TextTrimming="CharacterEllipsis"
+                                                   LineHeight="15"
+                                                   MaxHeight="34"
+                                                   VerticalAlignment="Top" />
+                                        <TextBox Visibility="Collapsed"
+                                                 MinWidth="72"
+                                                 Padding="2,0"
+                                                 FontSize="12"
+                                                 TextAlignment="Center"
+                                                 HorizontalContentAlignment="Center"
+                                                 VerticalContentAlignment="Center"
+                                                 KeyDown="ItemRenameTextBox_KeyDown"
+                                                 LostKeyboardFocus="ItemRenameTextBox_LostKeyboardFocus" />
+                                    </Grid>
                                 </Grid>
                             </Border>
                         </DataTemplate>

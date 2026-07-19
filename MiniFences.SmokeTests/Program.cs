@@ -918,6 +918,22 @@ static void TestFenceControlBindingAndLayout(string root)
                 "Equal-width tabs should divide the complete title bar into equal columns.");
             desktopGroup.StopForTesting();
 
+            var secondFence = new FenceControl(new FenceConfig
+            {
+                Id = "selection-test",
+                Title = "Selection Test",
+                FolderPath = folder,
+                Width = 300,
+                Height = 220
+            });
+            secondFence.LoadFolderItems();
+            control.SelectItemForTesting(0);
+            secondFence.SelectItemForTesting(0);
+            MainWindow.ClearOtherFenceSelections([control, secondFence], secondFence);
+            Assert(control.SelectedItemCountForTesting == 0 && secondFence.SelectedItemCountForTesting == 1,
+                "Selecting an item in one Fence must clear item selections in every other Fence.");
+            secondFence.StopForTesting();
+
             var looseIcon = new DesktopLooseIconControl(new FolderItem
             {
                 Name = "bound-folder",
@@ -1102,11 +1118,11 @@ static void TestShellOpenRequests(string root)
     }
 
     Assert(requests.Count == paths.Length, "Folder, file, and shortcut should each issue one Shell open request.");
-    for (var index = 0; index < paths.Length; index += 1)
-    {
-        Assert(requests[index].FileName == paths[index], "Shell open request should use the item's exact FullPath.");
-        Assert(requests[index].UseShellExecute, "Shell open request must use Windows Shell execution.");
-    }
+    Assert(requests[0].FileName == "explorer.exe" && requests[0].Arguments.Contains(childFolder, StringComparison.Ordinal),
+        "Folders must open explicitly in Explorer instead of resolving to a same-named application.");
+    Assert(requests[1].FileName == textPath && requests[2].FileName == shortcutPath,
+        "Files and shortcuts should use their exact FullPath for Shell execution.");
+    Assert(requests.All(request => request.UseShellExecute), "All open requests must use Windows Shell execution.");
 
     requests.Clear();
     var explorerItem = new FolderItem { Name = "document", FullPath = textPath };

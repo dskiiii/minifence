@@ -280,6 +280,7 @@ public partial class MainWindow : Window
 
     private void HandleLooseIconSelection(DesktopLooseIconControl clicked, ModifierKeys modifiers)
     {
+        foreach (var fence in Workspace.Children.OfType<FenceControl>()) fence.ClearItemSelection();
         var controls = Workspace.Children.OfType<DesktopLooseIconControl>().ToList();
         var path = clicked.Item.FullPath;
         if ((modifiers & ModifierKeys.Shift) != 0 && !string.IsNullOrWhiteSpace(_looseSelectionAnchor))
@@ -388,6 +389,7 @@ public partial class MainWindow : Window
             DispatcherPriority.Background);
         control.DesktopItemDragStarted += (_, _) => BeginDesktopItemDrag();
         control.DesktopItemDragEnded += (_, _) => EndDesktopItemDrag();
+        control.ItemSelectionRequested += (_, _) => HandleFenceItemSelection(control);
         control.HeaderDragCompleted += (_, _) => HandleHeaderDragCompleted(control);
         control.HeaderDragMoved += (_, _) =>
         {
@@ -415,6 +417,21 @@ public partial class MainWindow : Window
             ScheduleConfigSave();
         }, DispatcherPriority.Loaded);
         return layoutChanged;
+    }
+
+    private void HandleFenceItemSelection(FenceControl activeFence)
+    {
+        ClearOtherFenceSelections(Workspace.Children.OfType<FenceControl>(), activeFence);
+        _selectedLoosePaths.Clear();
+        UpdateLooseIconSelectionVisuals();
+    }
+
+    internal static void ClearOtherFenceSelections(IEnumerable<FenceControl> fences, FenceControl activeFence)
+    {
+        foreach (var fence in fences)
+        {
+            if (!ReferenceEquals(fence, activeFence)) fence.ClearItemSelection();
+        }
     }
 
     private void BringFenceToFront(FenceControl control)

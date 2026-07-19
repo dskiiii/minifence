@@ -87,7 +87,19 @@ public partial class DesktopLooseIconControl : System.Windows.Controls.UserContr
         }
     }
 
-    private void Control_PreviewMouseLeftButtonUp(object sender, MouseButtonEventArgs e) => ReleaseMouseCapture();
+    private void Control_PreviewMouseLeftButtonUp(object sender, MouseButtonEventArgs e)
+    {
+        if (_wasSelectedBeforeLeftDown && IsSelected && !_isInlineRenaming && NameText.Visibility == Visibility.Visible)
+        {
+            var point = e.GetPosition(NameText);
+            if (new Rect(new System.Windows.Point(0, 0), NameText.RenderSize).Contains(point))
+            {
+                ScheduleInlineRename();
+                e.Handled = true;
+            }
+        }
+        ReleaseMouseCapture();
+    }
 
     private void Control_MouseMove(object sender, System.Windows.Input.MouseEventArgs e)
     {
@@ -173,9 +185,8 @@ public partial class DesktopLooseIconControl : System.Windows.Controls.UserContr
         BeginInlineRename();
     }
 
-    private void NameText_MouseLeftButtonUp(object sender, MouseButtonEventArgs e)
+    private void ScheduleInlineRename()
     {
-        if (!_wasSelectedBeforeLeftDown || !IsSelected || _isInlineRenaming) return;
         CancelPendingInlineRename();
         _renameTimer = new DispatcherTimer
         {
@@ -187,7 +198,6 @@ public partial class DesktopLooseIconControl : System.Windows.Controls.UserContr
             if (IsSelected && Mouse.LeftButton == MouseButtonState.Released) BeginInlineRename();
         };
         _renameTimer.Start();
-        e.Handled = true;
     }
 
     private void BeginInlineRename()

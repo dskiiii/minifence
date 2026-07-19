@@ -28,8 +28,7 @@
                            FontSize="12"
                            TextAlignment="Center"
                            TextWrapping="Wrap"
-                           TextTrimming="CharacterEllipsis"
-                           MouseLeftButtonUp="NameText_MouseLeftButtonUp" />
+                           TextTrimming="CharacterEllipsis" />
                 <TextBox x:Name="RenameTextBox"
                          Visibility="Collapsed"
                          MinWidth="72"

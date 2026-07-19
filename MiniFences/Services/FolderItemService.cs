@@ -155,11 +155,19 @@ public sealed class FolderItemService
                 return false;
             }
 
-            _startProcess(new ProcessStartInfo
-            {
-                FileName = item.FullPath,
-                UseShellExecute = true
-            });
+            var startInfo = Directory.Exists(item.FullPath)
+                ? new ProcessStartInfo
+                {
+                    FileName = "explorer.exe",
+                    Arguments = $"\"{item.FullPath}\"",
+                    UseShellExecute = true
+                }
+                : new ProcessStartInfo
+                {
+                    FileName = item.FullPath,
+                    UseShellExecute = true
+                };
+            _startProcess(startInfo);
             AppLogger.Log($"Open succeeded: {item.FullPath}");
             error = null;
             return true;
