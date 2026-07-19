@@ -755,7 +755,7 @@ public partial class FenceControl : System.Windows.Controls.UserControl
                 return;
             }
 
-            if (!_folderItemService.TryRenameItem(item, newName, out _, out var error))
+            if (!_folderItemService.TryRenameItem(item, newName, out var renamedPath, out var error))
             {
                 System.Windows.MessageBox.Show(FormatFileOperationError(error, "CouldNotRenameItem"), "MiniFences", MessageBoxButton.OK, MessageBoxImage.Warning);
                 editor.Focus();
@@ -763,6 +763,10 @@ public partial class FenceControl : System.Windows.Controls.UserControl
                 return;
             }
 
+            if (ReplaceAssignedPathAfterRename(Config, item.FullPath, renamedPath))
+            {
+                Changed?.Invoke(this, EventArgs.Empty);
+            }
             EndInlineRename();
             LoadFolderItems();
         }
@@ -1022,13 +1026,28 @@ public partial class FenceControl : System.Windows.Controls.UserControl
             return;
         }
 
-        if (!_folderItemService.TryRenameItem(item, dialog.InputText, out _, out var error))
+        if (!_folderItemService.TryRenameItem(item, dialog.InputText, out var renamedPath, out var error))
         {
             System.Windows.MessageBox.Show(FormatFileOperationError(error, "CouldNotRenameItem"), "MiniFences", MessageBoxButton.OK, MessageBoxImage.Warning);
             return;
         }
 
+        if (ReplaceAssignedPathAfterRename(Config, item.FullPath, renamedPath))
+        {
+            Changed?.Invoke(this, EventArgs.Empty);
+        }
         LoadFolderItems();
+    }
+
+    internal static bool ReplaceAssignedPathAfterRename(FenceConfig config, string oldPath, string? renamedPath)
+    {
+        if (!config.IsDesktopGroup || string.IsNullOrWhiteSpace(renamedPath)) return false;
+        var index = config.AssignedPaths.FindIndex(path => string.Equals(path, oldPath, StringComparison.OrdinalIgnoreCase));
+        if (index < 0 || string.Equals(config.AssignedPaths[index], renamedPath, StringComparison.OrdinalIgnoreCase)) return false;
+
+        config.AssignedPaths[index] = renamedPath;
+        config.AssignedPaths = config.AssignedPaths.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        return true;
     }
 
     private void CopyItemPathMenuItem_Click(object sender, RoutedEventArgs e)

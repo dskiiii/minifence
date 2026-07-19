@@ -905,6 +905,10 @@ static void TestFenceControlBindingAndLayout(string root)
             Assert(desktopGroup.IsInnerPanelTransparentForTesting, "Clean Fence style should remove the inner content panel.");
             Assert(!desktopGroup.IsFooterVisibleForTesting, "Clean Fence style should remove the footer.");
             Assert(!desktopGroup.IsResizeHandleVisibleForTesting, "Resize handle should stay hidden until pointer hover.");
+            var renamedAssignedPath = Path.Combine(folder, "renamed-test.txt");
+            Assert(FenceControl.ReplaceAssignedPathAfterRename(desktopGroupConfig, filePath, renamedAssignedPath) &&
+                   desktopGroupConfig.AssignedPaths.SequenceEqual([renamedAssignedPath], StringComparer.OrdinalIgnoreCase),
+                "Renaming an assigned desktop item must preserve its Fence membership using the new path.");
             desktopGroup.SetTabStatus(3, 1);
             Assert(desktopGroup.IsTabNavigationVisibleForTesting, "Stacked Fences should expose direct previous/next tab navigation.");
             desktopGroup.SetTabStatus(3, 1, ["One", "Two", "Three"], useTabStrip: true, equalTabWidths: false);
