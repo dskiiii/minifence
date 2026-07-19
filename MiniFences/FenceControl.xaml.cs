@@ -898,6 +898,7 @@ public partial class FenceControl : System.Windows.Controls.UserControl
                    FindItemContainerAtPoint(e.GetPosition(ItemsList));
         if (item != null)
         {
+            ItemSelectionRequested?.Invoke(this, EventArgs.Empty);
             if (!item.IsSelected)
             {
                 ItemsList.SelectedItems.Clear();
@@ -905,6 +906,7 @@ public partial class FenceControl : System.Windows.Controls.UserControl
 
             item.IsSelected = true;
             item.Focus();
+            Dispatcher.Invoke(() => { }, DispatcherPriority.Render);
             var selectedPaths = GetSelectedItems().Select(selected => selected.FullPath).ToArray();
             var rightClickedPath = (item.DataContext as FolderItem)?.FullPath;
             if (string.IsNullOrWhiteSpace(rightClickedPath)) return;
