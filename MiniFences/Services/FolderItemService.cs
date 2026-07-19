@@ -221,7 +221,7 @@ public sealed class FolderItemService
             if (string.IsNullOrWhiteSpace(destinationFolder) || !Directory.Exists(destinationFolder))
             {
                 AppLogger.Log($"Move failed because destination folder does not exist: {destinationFolder}");
-                return new FolderMoveResult(0, 0, ["Destination folder does not exist."]);
+                return new FolderMoveResult(0, 0, ["Destination folder does not exist."], []);
             }
 
             var fullDestination = NormalizeDirectoryPath(destinationFolder);
@@ -229,6 +229,7 @@ public sealed class FolderItemService
             var moved = 0;
             var skipped = 0;
             var errors = new List<string>();
+            var movedPaths = new List<string>();
 
             foreach (var sourcePath in sourcePaths.Where(path => !string.IsNullOrWhiteSpace(path)))
             {
@@ -260,6 +261,7 @@ public sealed class FolderItemService
                     var destinationPath = GetAvailableDestinationPath(fullSource, fullDestination);
                     MoveFileSystemEntry(fullSource, destinationPath);
                     moved += 1;
+                    movedPaths.Add(destinationPath);
                     AppLogger.Log($"Move succeeded: {fullSource} -> {destinationPath}");
                 }
                 catch (Exception itemEx)
@@ -269,12 +271,12 @@ public sealed class FolderItemService
                 }
             }
 
-            return new FolderMoveResult(moved, skipped, errors);
+            return new FolderMoveResult(moved, skipped, errors, movedPaths);
         }
         catch (Exception ex)
         {
             AppLogger.LogException($"Move into folder failed. Destination={destinationFolder}", ex);
-            return new FolderMoveResult(0, 0, [ex.Message]);
+            return new FolderMoveResult(0, 0, [ex.Message], []);
         }
     }
 
@@ -671,4 +673,8 @@ public sealed class FolderItemService
     }
 }
 
-public sealed record FolderMoveResult(int Moved, int Skipped, IReadOnlyList<string> Errors);
+public sealed record FolderMoveResult(
+    int Moved,
+    int Skipped,
+    IReadOnlyList<string> Errors,
+    IReadOnlyList<string> MovedPaths);

@@ -793,6 +793,9 @@ static void TestFolderItemLoadingAndMove(string root)
     Assert(File.Exists(Path.Combine(destination, "batch-one.txt")), "First batch file should move.");
     Assert(File.Exists(Path.Combine(destination, "batch-two.txt")), "Second batch file should move.");
     Assert(!File.Exists(batchOne) && !File.Exists(batchTwo), "Batch move should leave source.");
+    Assert(moveResult.MovedPaths.Contains(Path.Combine(destination, "batch-one.txt"), StringComparer.OrdinalIgnoreCase) &&
+           moveResult.MovedPaths.Contains(Path.Combine(destination, "batch-two.txt"), StringComparer.OrdinalIgnoreCase),
+        "Move results must expose destination paths so restored desktop items can be assigned to a Fence.");
 
     var duplicateFileSource = Path.Combine(source, "report.txt");
     var duplicateFileExisting = Path.Combine(destination, "report.txt");

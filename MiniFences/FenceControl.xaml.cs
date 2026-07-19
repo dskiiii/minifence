@@ -1599,9 +1599,27 @@ public partial class FenceControl : System.Windows.Controls.UserControl
         if (Config.IsDesktopGroup)
         {
             var desktopPaths = paths.Where(IsDirectChildOfDesktopRoot).ToArray();
-            if (desktopPaths.Length == 0)
+            var pathsToRestore = paths.Where(path => !IsDirectChildOfDesktopRoot(path)).ToArray();
+            FolderMoveResult? restoreResult = null;
+            if (pathsToRestore.Length > 0)
             {
-                System.Windows.MessageBox.Show(_loc.T("DesktopGroupsOnlyAcceptDesktopItems"), "MiniFences", MessageBoxButton.OK, MessageBoxImage.Information);
+                var desktopRoot = Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory);
+                restoreResult = _folderItemService.MoveIntoFolder(pathsToRestore, desktopRoot);
+                if (restoreResult.Errors.Count > 0 || restoreResult.Skipped > 0)
+                {
+                    System.Windows.MessageBox.Show(BuildMoveSummary(restoreResult), "MiniFences", MessageBoxButton.OK,
+                        restoreResult.Errors.Count > 0 ? MessageBoxImage.Warning : MessageBoxImage.Information);
+                }
+            }
+
+            var assignablePaths = desktopPaths
+                .Concat(restoreResult?.MovedPaths ?? [])
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+            if (assignablePaths.Length == 0)
+            {
+                e.Effects = System.Windows.DragDropEffects.None;
+                e.Handled = true;
                 return;
             }
 
@@ -1613,8 +1631,10 @@ public partial class FenceControl : System.Windows.Controls.UserControl
                 .Distinct(StringComparer.OrdinalIgnoreCase)
                 .ToList();
             Config.SortMode = "None";
-            DesktopItemsAssigned?.Invoke(this, new DesktopItemsAssignedEventArgs(desktopPaths, insertionIndex));
-            e.Effects = System.Windows.DragDropEffects.Link;
+            DesktopItemsAssigned?.Invoke(this, new DesktopItemsAssignedEventArgs(assignablePaths, insertionIndex));
+            e.Effects = restoreResult?.Moved > 0
+                ? System.Windows.DragDropEffects.Move
+                : System.Windows.DragDropEffects.Link;
             e.Handled = true;
             return;
         }
@@ -1650,7 +1670,7 @@ public partial class FenceControl : System.Windows.Controls.UserControl
 
     private void UpdateDragState(System.Windows.DragEventArgs e)
     {
-        if (!TryGetDroppedFiles(e, out _))
+        if (!TryGetDroppedFiles(e, out var paths))
         {
             e.Effects = System.Windows.DragDropEffects.None;
             e.Handled = true;
@@ -1658,7 +1678,9 @@ public partial class FenceControl : System.Windows.Controls.UserControl
             return;
         }
 
-        e.Effects = Config.IsDesktopGroup ? System.Windows.DragDropEffects.Link : System.Windows.DragDropEffects.Move;
+        e.Effects = Config.IsDesktopGroup && paths.All(IsDirectChildOfDesktopRoot)
+            ? System.Windows.DragDropEffects.Link
+            : System.Windows.DragDropEffects.Move;
         e.Handled = true;
         OuterBorder.BorderBrush = System.Windows.Media.Brushes.DeepSkyBlue;
         OuterBorder.BorderThickness = new Thickness(2);
