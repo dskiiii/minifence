@@ -25,13 +25,16 @@ internal static class DesktopDragData
         data.SetFileDropList(files);
     }
 
-    internal static bool ShouldCancelExplorerDesktopDrop(System.Windows.DragDropKeyStates keyStates, bool overExplorerDesktop)
+    internal static bool ShouldCancelExplorerDesktopDrop(
+        System.Windows.DragDropKeyStates keyStates,
+        bool overExplorerDesktop,
+        bool overMiniFencesSurface = false)
     {
         const System.Windows.DragDropKeyStates mouseButtons =
             System.Windows.DragDropKeyStates.LeftMouseButton |
             System.Windows.DragDropKeyStates.RightMouseButton |
             System.Windows.DragDropKeyStates.MiddleMouseButton;
-        return overExplorerDesktop && (keyStates & mouseButtons) == 0;
+        return !overMiniFencesSurface && overExplorerDesktop && (keyStates & mouseButtons) == 0;
     }
 
     internal static bool ShouldReleaseDesktopMembershipAfterDrag(

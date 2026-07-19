@@ -36,6 +36,7 @@ public partial class DesktopLooseIconControl : System.Windows.Controls.UserContr
     public event EventHandler? DesktopItemDragStarted;
     public event EventHandler? DesktopItemDragEnded;
     internal Func<System.Drawing.Point, bool>? IsExplorerDesktopPointForDrag { get; set; }
+    internal Func<System.Drawing.Point, bool>? IsMiniFencesSurfacePointForDrag { get; set; }
 
     public void SetSelected(bool selected)
     {
@@ -118,9 +119,11 @@ public partial class DesktopLooseIconControl : System.Windows.Controls.UserContr
             desktopDropGuard = (_, e) =>
             {
                 var cursor = System.Windows.Forms.Cursor.Position;
+                var overMiniFencesSurface = IsMiniFencesSurfacePointForDrag?.Invoke(cursor) == true;
                 if (!DesktopDragData.ShouldCancelExplorerDesktopDrop(
                         e.KeyStates,
-                        IsExplorerDesktopPointForDrag(cursor))) return;
+                        IsExplorerDesktopPointForDrag(cursor),
+                        overMiniFencesSurface)) return;
                 e.Action = System.Windows.DragAction.Cancel;
                 e.Handled = true;
             };

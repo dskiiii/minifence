@@ -138,8 +138,9 @@ static void TestDesktopDragData()
         "Loose icon drags should preserve their origin and anchor item.");
     Assert(!DesktopDragData.ShouldCancelExplorerDesktopDrop(System.Windows.DragDropKeyStates.LeftMouseButton, true) &&
            DesktopDragData.ShouldCancelExplorerDesktopDrop(System.Windows.DragDropKeyStates.None, true) &&
+           !DesktopDragData.ShouldCancelExplorerDesktopDrop(System.Windows.DragDropKeyStates.None, true, overMiniFencesSurface: true) &&
            !DesktopDragData.ShouldCancelExplorerDesktopDrop(System.Windows.DragDropKeyStates.None, false),
-        "A completed drop on the Explorer desktop should be canceled before Shell can move or copy source files.");
+        "A completed drop on Explorer should be canceled without blocking valid drops on a MiniFences surface.");
     Assert(DesktopDragData.ShouldReleaseDesktopMembershipAfterDrag(System.Windows.DragDropEffects.None, true) &&
            !DesktopDragData.ShouldReleaseDesktopMembershipAfterDrag(System.Windows.DragDropEffects.Copy, false),
         "Only a canceled Explorer-desktop drop may release Fence membership; external uploads must keep it.");

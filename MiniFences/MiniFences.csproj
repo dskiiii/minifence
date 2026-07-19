@@ -11,9 +11,9 @@
     <Product>MiniFences</Product>
     <Description>Windows desktop folder partition manager.</Description>
     <ApplicationIcon>Assets\AppIcon.ico</ApplicationIcon>
-    <Version>0.20.18</Version>
-    <FileVersion>0.20.18.0</FileVersion>
-    <AssemblyVersion>0.20.18.0</AssemblyVersion>
+    <Version>0.20.19</Version>
+    <FileVersion>0.20.19.0</FileVersion>
+    <AssemblyVersion>0.20.19.0</AssemblyVersion>
   </PropertyGroup>
   <ItemGroup>
     <Resource Include="Assets\AppIcon.ico" />

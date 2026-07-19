@@ -246,6 +246,7 @@ public partial class MainWindow : Window
                 var top = 8 + row * 96;
                 var control = new DesktopLooseIconControl(item, _loc);
                 control.IsExplorerDesktopPointForDrag = IsExplorerDesktopPoint;
+                control.IsMiniFencesSurfacePointForDrag = IsPointOverVisibleFence;
                 control.SelectionRequested += HandleLooseIconSelection;
                 control.ItemsChanged += (_, _) => RenderFences();
                 control.DesktopItemDragStarted += (_, _) => BeginDesktopItemDrag();
@@ -369,6 +370,7 @@ public partial class MainWindow : Window
         control.ClickTitleToExpandEnabled = _config.ClickTitleToExpand;
         control.HoverTitleToExpandEnabled = _config.HoverTitleToExpand;
         control.IsExplorerDesktopPointForDrag = IsExplorerDesktopPoint;
+        control.IsMiniFencesSurfacePointForDrag = IsPointOverVisibleFence;
         control.SetLocalization(_loc);
         control.SetTabStatus(tabCount, tabIndex, tabTitles,
             string.Equals(_config.TabViewMode, "Strip", StringComparison.OrdinalIgnoreCase), _config.HoverSwitchTabs,

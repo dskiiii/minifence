@@ -82,6 +82,7 @@ public partial class FenceControl : System.Windows.Controls.UserControl
     internal double HeaderDragStartLeft => _leftStart;
     internal double HeaderDragStartTop => _topStart;
     internal Func<System.Drawing.Point, bool>? IsExplorerDesktopPointForDrag { get; set; }
+    internal Func<System.Drawing.Point, bool>? IsMiniFencesSurfacePointForDrag { get; set; }
 
     internal IReadOnlyList<FolderItem> LoadedItemsForTesting =>
         ItemsList.Items.OfType<FolderItem>().ToArray();
@@ -876,9 +877,11 @@ public partial class FenceControl : System.Windows.Controls.UserControl
                 desktopDropGuard = (_, e) =>
                 {
                     var cursor = Forms.Cursor.Position;
+                    var overMiniFencesSurface = IsMiniFencesSurfacePointForDrag?.Invoke(cursor) == true;
                     if (!DesktopDragData.ShouldCancelExplorerDesktopDrop(
                             e.KeyStates,
-                            IsExplorerDesktopPointForDrag(cursor))) return;
+                            IsExplorerDesktopPointForDrag(cursor),
+                            overMiniFencesSurface)) return;
                     desktopDropCanceled = true;
                     e.Action = System.Windows.DragAction.Cancel;
                     e.Handled = true;
@@ -898,7 +901,9 @@ public partial class FenceControl : System.Windows.Controls.UserControl
                 if (Config.IsDesktopGroup) DesktopItemDragEnded?.Invoke(this, EventArgs.Empty);
             }
             var cursor = Forms.Cursor.Position;
+            var overMiniFencesSurface = IsMiniFencesSurfacePointForDrag?.Invoke(cursor) == true;
             var overExplorerDesktop = Config.IsDesktopGroup &&
+                                      !overMiniFencesSurface &&
                                       IsExplorerDesktopPointForDrag?.Invoke(cursor) == true;
             AppLogger.Log($"Item drag completed. Result={result}; ScreenPoint={cursor.X},{cursor.Y}; ExplorerDesktopCanceled={desktopDropCanceled}");
             if (Config.IsDesktopGroup &&
