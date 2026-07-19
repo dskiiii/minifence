@@ -1983,6 +1983,9 @@ public partial class MainWindow : Window
                 }
                 else if (wParam == new IntPtr(WmRButtonDown))
                 {
+                    Dispatcher.BeginInvoke(
+                        () => CommitInlineRenamesOutside(screenPoint),
+                        DispatcherPriority.Input);
                     Dispatcher.BeginInvoke(() => CloseOpenContextMenus(clickPoint: screenPoint), DispatcherPriority.ContextIdle);
                 }
                 else if (wParam == new IntPtr(WmMouseMove))
@@ -2021,6 +2024,7 @@ public partial class MainWindow : Window
 
     private void HandleGlobalLeftButtonDown(System.Drawing.Point screenPoint, long clickTicks)
     {
+        CommitInlineRenamesOutside(screenPoint);
         var clickedDesktopBlank = IsScreenPointInsideDesktopWorkArea(screenPoint) &&
                                   !IsPointOverVisibleFence(screenPoint) &&
                                   IsExplorerDesktopPoint(screenPoint);
@@ -2052,6 +2056,23 @@ public partial class MainWindow : Window
         AppLogger.Log(_fencesHidden
             ? "Fences hidden by desktop double-click."
             : "Fences shown by desktop double-click.");
+    }
+
+    private void CommitInlineRenamesOutside(System.Drawing.Point screenPoint)
+    {
+        var wpfPoint = new System.Windows.Point(screenPoint.X, screenPoint.Y);
+        var fences = Workspace.Children.OfType<FenceControl>().ToArray();
+        var looseIcons = Workspace.Children.OfType<DesktopLooseIconControl>().ToArray();
+
+        foreach (var fence in fences)
+        {
+            fence.CommitInlineRenameIfPointerOutside(wpfPoint);
+        }
+
+        foreach (var looseIcon in looseIcons)
+        {
+            looseIcon.CommitInlineRenameIfPointerOutside(wpfPoint);
+        }
     }
 
     private bool IsScreenPointInsideDesktopWorkArea(System.Drawing.Point screenPoint)

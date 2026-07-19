@@ -235,6 +235,27 @@ public partial class DesktopLooseIconControl : System.Windows.Controls.UserContr
         if (_isInlineRenaming) CommitInlineRename();
     }
 
+    internal bool CommitInlineRenameIfPointerOutside(System.Windows.Point screenPoint)
+    {
+        if (!_isInlineRenaming) return false;
+
+        try
+        {
+            var localPoint = RenameTextBox.PointFromScreen(screenPoint);
+            if (new Rect(new System.Windows.Point(0, 0), RenameTextBox.RenderSize).Contains(localPoint))
+            {
+                return false;
+            }
+        }
+        catch
+        {
+            // A detached editor cannot contain the current pointer.
+        }
+
+        CommitInlineRename();
+        return true;
+    }
+
     private void CommitInlineRename()
     {
         if (!_isInlineRenaming || _isCommittingInlineRename) return;

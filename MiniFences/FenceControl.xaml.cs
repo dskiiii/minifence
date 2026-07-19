@@ -718,6 +718,27 @@ public partial class FenceControl : System.Windows.Controls.UserControl
         if (_inlineRenameItem != null) CommitInlineRename();
     }
 
+    internal bool CommitInlineRenameIfPointerOutside(System.Windows.Point screenPoint)
+    {
+        if (_inlineRenameItem == null || _inlineRenameTextBox == null) return false;
+
+        try
+        {
+            var localPoint = _inlineRenameTextBox.PointFromScreen(screenPoint);
+            if (new Rect(new System.Windows.Point(0, 0), _inlineRenameTextBox.RenderSize).Contains(localPoint))
+            {
+                return false;
+            }
+        }
+        catch
+        {
+            // A detached editor cannot contain the current pointer.
+        }
+
+        CommitInlineRename();
+        return true;
+    }
+
     private void CommitInlineRename()
     {
         if (_inlineRenameItem == null || _inlineRenameTextBox == null || _isCommittingInlineRename) return;

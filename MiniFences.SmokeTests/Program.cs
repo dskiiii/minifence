@@ -944,9 +944,9 @@ static void TestFenceControlBindingAndLayout(string root)
             looseIcon.BeginInlineRenameForTesting();
             Assert(looseIcon.IsInlineRenamingForTesting,
                 "A selected loose desktop icon should expose an inline text editor for renaming.");
-            looseIcon.EndInlineRenameForTesting();
+            looseIcon.CommitInlineRenameIfPointerOutside(new System.Windows.Point(-1000, -1000));
             Assert(!looseIcon.IsInlineRenamingForTesting,
-                "Canceling inline rename should restore the desktop icon label.");
+                "Clicking outside an inline rename editor should commit it and restore the desktop icon label.");
 
             var shortRenameEditor = new System.Windows.Controls.TextBox { FontSize = 12 };
             InlineRenameAppearance.Apply(shortRenameEditor, "tools");
