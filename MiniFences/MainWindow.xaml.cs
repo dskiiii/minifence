@@ -384,7 +384,9 @@ public partial class MainWindow : Window
             ScheduleConfigSave();
         };
         control.NewFenceRequested += (_, _) => CreateNewDesktopGroup();
-        control.DesktopItemsAssigned += (_, e) => Dispatcher.BeginInvoke(() => AssignDesktopItems(control.Config, e.Paths), DispatcherPriority.Background);
+        control.DesktopItemsAssigned += (_, e) => Dispatcher.BeginInvoke(
+            () => AssignDesktopItems(control.Config, e.Paths, e.InsertionIndex),
+            DispatcherPriority.Background);
         control.DesktopItemsReleased += (_, e) => Dispatcher.BeginInvoke(
             () => ReleaseDesktopItemsToDesktop(e.Paths, e.ScreenPoint),
             DispatcherPriority.Background);
@@ -788,20 +790,38 @@ public partial class MainWindow : Window
         SaveConfigWithWarning();
     }
 
-    private void AssignDesktopItems(FenceConfig target, IReadOnlyList<string> paths)
+    private void AssignDesktopItems(FenceConfig target, IReadOnlyList<string> paths, int? insertionIndex = null)
     {
-        foreach (var path in paths.Distinct(StringComparer.OrdinalIgnoreCase))
+        var movedPaths = paths.Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+        var currentTargetOrder = target.AssignedPaths.ToArray();
+        foreach (var path in movedPaths)
         {
             foreach (var fence in _config.Fences.Where(fence => fence.IsDesktopGroup))
             {
                 fence.AssignedPaths.RemoveAll(existing => string.Equals(existing, path, StringComparison.OrdinalIgnoreCase));
             }
-            target.AssignedPaths.Add(path);
         }
 
-        target.AssignedPaths = target.AssignedPaths.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        target.AssignedPaths = insertionIndex.HasValue
+            ? ReorderFenceItems(currentTargetOrder, movedPaths, insertionIndex.Value)
+            : target.AssignedPaths.Concat(movedPaths).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        if (insertionIndex.HasValue) target.SortMode = "None";
         RenderFences();
         SaveConfigWithWarning();
+    }
+
+    internal static List<string> ReorderFenceItems(IEnumerable<string> currentOrder, IEnumerable<string> movedPaths, int targetIndex)
+    {
+        var current = currentOrder.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        var moved = movedPaths.Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+        var clampedTarget = Math.Clamp(targetIndex, 0, current.Count);
+        var removedBeforeTarget = current.Take(clampedTarget)
+            .Count(path => moved.Contains(path, StringComparer.OrdinalIgnoreCase));
+        var result = current
+            .Where(path => !moved.Contains(path, StringComparer.OrdinalIgnoreCase))
+            .ToList();
+        result.InsertRange(Math.Clamp(clampedTarget - removedBeforeTarget, 0, result.Count), moved);
+        return result;
     }
 
     private void ReleaseDesktopItemsToDesktop(IReadOnlyList<string> paths, System.Drawing.Point screenPoint)

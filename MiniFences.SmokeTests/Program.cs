@@ -968,6 +968,11 @@ static void TestFenceControlBindingAndLayout(string root)
             Assert(MainWindow.UpdateInlineRenameActivationStyle(noActivateStyle, enabled: true) == 0 &&
                    MainWindow.UpdateInlineRenameActivationStyle(0, enabled: false) == noActivateStyle,
                 "Inline rename must temporarily enable window activation for keyboard input and restore it afterward.");
+            Assert(MainWindow.ReorderFenceItems(["A", "B", "C", "D"], ["B"], 3)
+                    .SequenceEqual(["A", "C", "B", "D"], StringComparer.OrdinalIgnoreCase) &&
+                   MainWindow.ReorderFenceItems(["A", "B", "C"], ["C"], 0)
+                    .SequenceEqual(["C", "A", "B"], StringComparer.OrdinalIgnoreCase),
+                "Dragging Fence icons must persist their insertion order instead of snapping back to a fixed sort.");
 
             var watchedFilePath = Path.Combine(folder, "watcher-created.txt");
             File.WriteAllText(watchedFilePath, "watcher");

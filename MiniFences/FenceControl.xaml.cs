@@ -1541,7 +1541,15 @@ public partial class FenceControl : System.Windows.Controls.UserControl
                 return;
             }
 
-            DesktopItemsAssigned?.Invoke(this, new DesktopItemsAssignedEventArgs(desktopPaths));
+            var insertionIndex = GetDropInsertionIndex(e);
+            Config.AssignedPaths = ItemsList.Items
+                .OfType<FolderItem>()
+                .Select(item => item.FullPath)
+                .Where(path => !string.IsNullOrWhiteSpace(path))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            Config.SortMode = "None";
+            DesktopItemsAssigned?.Invoke(this, new DesktopItemsAssignedEventArgs(desktopPaths, insertionIndex));
             e.Effects = System.Windows.DragDropEffects.Link;
             e.Handled = true;
             return;
@@ -1561,6 +1569,19 @@ public partial class FenceControl : System.Windows.Controls.UserControl
         {
             System.Windows.MessageBox.Show(BuildMoveSummary(result), "MiniFences", MessageBoxButton.OK, MessageBoxImage.Information);
         }
+    }
+
+    private int GetDropInsertionIndex(System.Windows.DragEventArgs e)
+    {
+        if (e.OriginalSource is not DependencyObject source) return ItemsList.Items.Count;
+        var container = FindVisualParent<System.Windows.Controls.ListViewItem>(source);
+        if (container == null) return ItemsList.Items.Count;
+
+        var index = ItemsList.ItemContainerGenerator.IndexFromContainer(container);
+        if (index < 0) return ItemsList.Items.Count;
+        var point = e.GetPosition(container);
+        var insertAfter = point.X >= container.ActualWidth / 2;
+        return Math.Clamp(index + (insertAfter ? 1 : 0), 0, ItemsList.Items.Count);
     }
 
     private void UpdateDragState(System.Windows.DragEventArgs e)
@@ -2043,9 +2064,10 @@ public partial class FenceControl : System.Windows.Controls.UserControl
     }
 }
 
-public sealed class DesktopItemsAssignedEventArgs(IReadOnlyList<string> paths) : EventArgs
+public sealed class DesktopItemsAssignedEventArgs(IReadOnlyList<string> paths, int? insertionIndex = null) : EventArgs
 {
     public IReadOnlyList<string> Paths { get; } = paths;
+    public int? InsertionIndex { get; } = insertionIndex;
 }
 
 public sealed class DesktopItemsReleasedEventArgs(
