@@ -12,9 +12,11 @@ public sealed class ShellContextMenuService
         IntPtr owner,
         System.Drawing.Point screenPoint,
         out bool commandInvoked,
+        out string? commandVerb,
         out string? error)
     {
         commandInvoked = false;
+        commandVerb = null;
         error = null;
         var paths = SelectPathsForContextMenu(rightClickedPath, selectedPaths);
         if (paths.Length == 0) return false;
@@ -50,7 +52,7 @@ public sealed class ShellContextMenuService
 
             menu = CreatePopupMenu();
             if (menu == IntPtr.Zero) throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
-            contextMenu.QueryContextMenu(menu, 0, CommandFirst, CommandLast, CmfNormal | CmfExplore);
+            contextMenu.QueryContextMenu(menu, 0, CommandFirst, CommandLast, CmfNormal | CmfExplore | CmfCanRename);
 
             try { contextMenu3 = contextMenu as IContextMenu3; } catch { contextMenu3 = null; }
             if (contextMenu3 == null)
@@ -81,13 +83,21 @@ public sealed class ShellContextMenuService
             var command = TrackPopupMenuEx(menu, TpmReturnCmd | TpmRightButton, screenPoint.X, screenPoint.Y, owner, IntPtr.Zero);
             if (command >= CommandFirst)
             {
+                var commandOffset = command - CommandFirst;
+                commandVerb = TryGetCanonicalVerb(contextMenu, commandOffset);
+                if (ShouldHandleCommandInHost(commandVerb))
+                {
+                    commandInvoked = true;
+                    return true;
+                }
+
                 var invoke = new CommandInfo
                 {
                     Size = Marshal.SizeOf<CommandInfo>(),
                     Mask = CmicUnicode | CmicPtInvoke,
                     Owner = owner,
-                    Verb = new IntPtr(command - CommandFirst),
-                    VerbW = new IntPtr(command - CommandFirst),
+                    Verb = new IntPtr(commandOffset),
+                    VerbW = new IntPtr(commandOffset),
                     Show = SwShowNormal,
                     InvokePoint = new NativePoint { X = screenPoint.X, Y = screenPoint.Y }
                 };
@@ -109,6 +119,36 @@ public sealed class ShellContextMenuService
             if (contextMenu != null && Marshal.IsComObject(contextMenu)) Marshal.FinalReleaseComObject(contextMenu);
             if (shellFolder != null && Marshal.IsComObject(shellFolder)) Marshal.FinalReleaseComObject(shellFolder);
             foreach (var pidl in fullPidls) Marshal.FreeCoTaskMem(pidl);
+        }
+    }
+
+    internal static bool ShouldHandleCommandInHost(string? commandVerb) =>
+        string.Equals(commandVerb, "rename", StringComparison.OrdinalIgnoreCase);
+
+    private static string? TryGetCanonicalVerb(IContextMenu contextMenu, uint commandOffset)
+    {
+        const int capacity = 260;
+        var buffer = Marshal.AllocCoTaskMem(capacity * sizeof(char));
+        try
+        {
+            for (var index = 0; index < capacity; index += 1)
+            {
+                Marshal.WriteInt16(buffer, index * sizeof(char), 0);
+            }
+
+            var result = contextMenu.GetCommandString((UIntPtr)commandOffset, GcsVerbW, IntPtr.Zero, buffer, capacity);
+            if (result != 0) return null;
+            var verb = Marshal.PtrToStringUni(buffer);
+            return string.IsNullOrWhiteSpace(verb) ? null : verb;
+        }
+        catch (Exception ex)
+        {
+            AppLogger.LogException("Could not read Shell context-menu command verb", ex);
+            return null;
+        }
+        finally
+        {
+            Marshal.FreeCoTaskMem(buffer);
         }
     }
 
@@ -137,10 +177,12 @@ public sealed class ShellContextMenuService
     private const uint CommandLast = 0x7FFF;
     private const uint CmfNormal = 0;
     private const uint CmfExplore = 0x4;
+    private const uint CmfCanRename = 0x10;
     private const uint TpmRightButton = 0x2;
     private const uint TpmReturnCmd = 0x100;
     private const uint CmicUnicode = 0x4000;
     private const uint CmicPtInvoke = 0x20000000;
+    private const uint GcsVerbW = 0x4;
     private const int SwShowNormal = 1;
     private const int WmDrawItem = 0x002B;
     private const int WmMeasureItem = 0x002C;
@@ -189,7 +231,7 @@ public sealed class ShellContextMenuService
     {
         [PreserveSig] int QueryContextMenu(IntPtr menu, uint index, uint commandFirst, uint commandLast, uint flags);
         void InvokeCommand(ref CommandInfo commandInfo);
-        void GetCommandString(UIntPtr command, uint flags, IntPtr reserved, IntPtr name, uint maxName);
+        [PreserveSig] int GetCommandString(UIntPtr command, uint flags, IntPtr reserved, IntPtr name, int maxName);
     }
 
     [ComImport, InterfaceType(ComInterfaceType.InterfaceIsIUnknown), Guid("000214F4-0000-0000-C000-000000000046")]
@@ -197,7 +239,7 @@ public sealed class ShellContextMenuService
     {
         [PreserveSig] int QueryContextMenu(IntPtr menu, uint index, uint commandFirst, uint commandLast, uint flags);
         void InvokeCommand(ref CommandInfo commandInfo);
-        void GetCommandString(UIntPtr command, uint flags, IntPtr reserved, IntPtr name, uint maxName);
+        [PreserveSig] int GetCommandString(UIntPtr command, uint flags, IntPtr reserved, IntPtr name, int maxName);
         [PreserveSig] int HandleMenuMsg(uint message, IntPtr wParam, IntPtr lParam);
     }
 
@@ -206,7 +248,7 @@ public sealed class ShellContextMenuService
     {
         [PreserveSig] int QueryContextMenu(IntPtr menu, uint index, uint commandFirst, uint commandLast, uint flags);
         void InvokeCommand(ref CommandInfo commandInfo);
-        void GetCommandString(UIntPtr command, uint flags, IntPtr reserved, IntPtr name, uint maxName);
+        [PreserveSig] int GetCommandString(UIntPtr command, uint flags, IntPtr reserved, IntPtr name, int maxName);
         [PreserveSig] int HandleMenuMsg(uint message, IntPtr wParam, IntPtr lParam);
         [PreserveSig] int HandleMenuMsg2(uint message, IntPtr wParam, IntPtr lParam, out IntPtr result);
     }

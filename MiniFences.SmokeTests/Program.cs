@@ -26,6 +26,7 @@ try
     TestFolderItemLoadingAndMove(root);
     TestShellOpenRequests(root);
     TestShellContextMenuPathSelection(root);
+    TestShellContextMenuHostCommands();
     TestFenceControlBindingAndLayout(root);
     TestMetadataOrganizer(root);
     TestMultiRootMetadataOrganizer(root);
@@ -82,6 +83,17 @@ static void TestShellContextMenuPathSelection(string root)
         Path.Combine(personal, "missing.txt"),
         [personalPeer]);
     Assert(invalidSelection.Length == 0, "A missing right-click target should not open a Shell context menu.");
+}
+
+static void TestShellContextMenuHostCommands()
+{
+    Assert(ShellContextMenuService.ShouldHandleCommandInHost("rename"),
+        "The Shell rename command must be handled by MiniFences so it can show its own rename editor.");
+    Assert(ShellContextMenuService.ShouldHandleCommandInHost("RENAME"),
+        "Shell command matching should be case-insensitive.");
+    Assert(!ShellContextMenuService.ShouldHandleCommandInHost("delete") &&
+           !ShellContextMenuService.ShouldHandleCommandInHost(null),
+        "Commands implemented by the Shell must continue through the native context-menu handler.");
 }
 
 static void TestSettingsNavigation()

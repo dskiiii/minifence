@@ -770,10 +770,17 @@ public partial class FenceControl : System.Windows.Controls.UserControl
             var window = Window.GetWindow(this);
             var owner = window == null ? IntPtr.Zero : new System.Windows.Interop.WindowInteropHelper(window).Handle;
             var cursor = Forms.Cursor.Position;
-            if (_shellContextMenuService.Show(rightClickedPath, selectedPaths, owner, cursor, out var commandInvoked, out var error))
+            if (_shellContextMenuService.Show(rightClickedPath, selectedPaths, owner, cursor, out var commandInvoked, out var commandVerb, out var error))
             {
                 e.Handled = true;
-                if (commandInvoked) LoadFolderItems();
+                if (ShellContextMenuService.ShouldHandleCommandInHost(commandVerb) && item.DataContext is FolderItem renameItem)
+                {
+                    RenameItem(renameItem);
+                }
+                else if (commandInvoked)
+                {
+                    LoadFolderItems();
+                }
             }
             else if (!string.IsNullOrWhiteSpace(error))
             {

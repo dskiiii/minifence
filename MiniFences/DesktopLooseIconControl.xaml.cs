@@ -60,10 +60,17 @@ public partial class DesktopLooseIconControl : System.Windows.Controls.UserContr
         var owner = window == null ? IntPtr.Zero : new WindowInteropHelper(window).Handle;
         var cursor = System.Windows.Forms.Cursor.Position;
         var paths = DragPaths.Count > 0 ? DragPaths : [Item.FullPath];
-        if (_shellContextMenu.Show(Item.FullPath, paths, owner, cursor, out var commandInvoked, out var error))
+        if (_shellContextMenu.Show(Item.FullPath, paths, owner, cursor, out var commandInvoked, out var commandVerb, out var error))
         {
             e.Handled = true;
-            if (commandInvoked) ItemsChanged?.Invoke(this, EventArgs.Empty);
+            if (ShellContextMenuService.ShouldHandleCommandInHost(commandVerb))
+            {
+                RenameItem();
+            }
+            else if (commandInvoked)
+            {
+                ItemsChanged?.Invoke(this, EventArgs.Empty);
+            }
         }
         else if (!string.IsNullOrWhiteSpace(error))
         {
@@ -146,6 +153,11 @@ public partial class DesktopLooseIconControl : System.Windows.Controls.UserContr
     }
 
     private void RenameMenuItem_Click(object sender, RoutedEventArgs e)
+    {
+        RenameItem();
+    }
+
+    private void RenameItem()
     {
         var dialog = new RenameFenceDialog(Item.Name, _localization, "RenameItem", "ItemName", "ItemNameCannotBeEmpty")
         {
