@@ -983,6 +983,17 @@ static void TestFenceControlBindingAndLayout(string root)
             Assert(FenceControl.IsFolderIconHotZone(new System.Windows.Point(21, 21), new System.Windows.Size(42, 42)) &&
                    !FenceControl.IsFolderIconHotZone(new System.Windows.Point(21, 70), new System.Windows.Size(42, 42)),
                 "Only the folder image itself should accept file moves; its label and surrounding cell must remain available for manual ordering.");
+            var gridBounds = new[]
+            {
+                new System.Windows.Rect(0, 0, 86, 92),
+                new System.Windows.Rect(94, 0, 86, 92),
+                new System.Windows.Rect(0, 100, 86, 92),
+                new System.Windows.Rect(94, 100, 86, 92)
+            };
+            Assert(FenceControl.GetGridInsertionIndex(gridBounds, new System.Windows.Point(400, 40)) == 2 &&
+                   FenceControl.GetGridInsertionIndex(gridBounds, new System.Windows.Point(0, 140)) == 2 &&
+                   FenceControl.GetGridInsertionIndex(gridBounds, new System.Windows.Point(20, 260)) == 4,
+                "Dropping in right-side blank space must insert at the end of the nearest row, not at the end of the entire Fence.");
 
             var watchedFilePath = Path.Combine(folder, "watcher-created.txt");
             File.WriteAllText(watchedFilePath, "watcher");

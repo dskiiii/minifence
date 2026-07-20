@@ -1675,15 +1675,53 @@ public partial class FenceControl : System.Windows.Controls.UserControl
 
     private int GetDropInsertionIndex(System.Windows.DragEventArgs e)
     {
-        if (e.OriginalSource is not DependencyObject source) return ItemsList.Items.Count;
+        var source = e.OriginalSource as DependencyObject;
         var container = FindVisualParent<System.Windows.Controls.ListViewItem>(source);
-        if (container == null) return ItemsList.Items.Count;
+        if (container == null)
+        {
+            var bounds = Enumerable.Range(0, ItemsList.Items.Count)
+                .Select(index => ItemsList.ItemContainerGenerator.ContainerFromIndex(index) as System.Windows.Controls.ListViewItem)
+                .Where(item => item != null)
+                .Select(item =>
+                {
+                    var origin = item!.TranslatePoint(new System.Windows.Point(0, 0), ItemsList);
+                    return new Rect(origin, item.RenderSize);
+                })
+                .ToArray();
+            return GetGridInsertionIndex(bounds, e.GetPosition(ItemsList));
+        }
 
         var index = ItemsList.ItemContainerGenerator.IndexFromContainer(container);
         if (index < 0) return ItemsList.Items.Count;
         var point = e.GetPosition(container);
         var insertAfter = point.X >= container.ActualWidth / 2;
         return Math.Clamp(index + (insertAfter ? 1 : 0), 0, ItemsList.Items.Count);
+    }
+
+    internal static int GetGridInsertionIndex(IReadOnlyList<Rect> itemBounds, System.Windows.Point point)
+    {
+        if (itemBounds.Count == 0) return 0;
+        if (point.Y <= itemBounds.Min(bounds => bounds.Top)) return 0;
+        if (point.Y >= itemBounds.Max(bounds => bounds.Bottom)) return itemBounds.Count;
+
+        var nearestCenterY = itemBounds
+            .Select(bounds => bounds.Top + bounds.Height / 2)
+            .OrderBy(centerY => Math.Abs(centerY - point.Y))
+            .First();
+        var rowTolerance = Math.Max(1, itemBounds.Max(bounds => bounds.Height) / 2);
+        var row = itemBounds
+            .Select((bounds, index) => (bounds, index))
+            .Where(entry => Math.Abs(entry.bounds.Top + entry.bounds.Height / 2 - nearestCenterY) < rowTolerance)
+            .OrderBy(entry => entry.bounds.Left)
+            .ToArray();
+        if (row.Length == 0) return itemBounds.Count;
+
+        foreach (var entry in row)
+        {
+            if (point.X < entry.bounds.Left + entry.bounds.Width / 2) return entry.index;
+        }
+
+        return Math.Min(itemBounds.Count, row[^1].index + 1);
     }
 
     private void UpdateDragState(System.Windows.DragEventArgs e)
