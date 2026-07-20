@@ -35,7 +35,7 @@ public partial class DesktopLooseIconControl : System.Windows.Controls.UserContr
         IsSelected && double.IsNaN(Height) && NameText.TextWrapping == TextWrapping.Wrap &&
         NameText.TextTrimming == TextTrimming.None;
     internal bool IsRenameEditorWrappedForTesting =>
-        RenameTextBox.TextWrapping == TextWrapping.Wrap && double.IsNaN(RenameTextBox.Height);
+        RenameTextBox.TextWrapping == TextWrapping.Wrap && RenameTextBox.Height > InlineRenameAppearance.EditorHeight;
     public event Action<DesktopLooseIconControl, ModifierKeys>? SelectionRequested;
     public event EventHandler? ItemsChanged;
     public event EventHandler? DesktopItemDragStarted;
@@ -254,12 +254,7 @@ public partial class DesktopLooseIconControl : System.Windows.Controls.UserContr
         _isInlineRenaming = true;
         RenameTextBox.Text = Item.Name;
         InlineRenameAppearance.Apply(RenameTextBox, Item.Name);
-        RenameTextBox.Width = InlineRenameAppearance.MaximumWidth;
-        RenameTextBox.Height = double.NaN;
-        RenameTextBox.MinHeight = InlineRenameAppearance.EditorHeight;
-        RenameTextBox.TextWrapping = TextWrapping.Wrap;
-        RenameTextBox.HorizontalScrollBarVisibility = System.Windows.Controls.ScrollBarVisibility.Disabled;
-        RenameTextBox.VerticalScrollBarVisibility = System.Windows.Controls.ScrollBarVisibility.Hidden;
+        ApplyDesktopRenameEditorLayout();
         NameText.Visibility = Visibility.Collapsed;
         RenameTextBox.Visibility = Visibility.Visible;
         if (Window.GetWindow(this) is MainWindow mainWindow)
@@ -275,6 +270,25 @@ public partial class DesktopLooseIconControl : System.Windows.Controls.UserContr
 
     internal void BeginInlineRenameForTesting() => BeginInlineRename();
     internal void EndInlineRenameForTesting() => EndInlineRename();
+    internal void SetInlineRenameTextForTesting(string text) => RenameTextBox.Text = text;
+
+    private void RenameTextBox_TextChanged(object sender, System.Windows.Controls.TextChangedEventArgs e)
+    {
+        if (_isInlineRenaming) ApplyDesktopRenameEditorLayout();
+    }
+
+    private void ApplyDesktopRenameEditorLayout()
+    {
+        RenameTextBox.Width = InlineRenameAppearance.MaximumWidth;
+        RenameTextBox.MinHeight = InlineRenameAppearance.EditorHeight;
+        RenameTextBox.TextWrapping = TextWrapping.Wrap;
+        RenameTextBox.HorizontalScrollBarVisibility = System.Windows.Controls.ScrollBarVisibility.Disabled;
+        RenameTextBox.VerticalScrollBarVisibility = System.Windows.Controls.ScrollBarVisibility.Hidden;
+        RenameTextBox.Height = InlineRenameAppearance.MeasureWrappedHeight(
+            RenameTextBox,
+            RenameTextBox.Text,
+            InlineRenameAppearance.MaximumWidth);
+    }
 
     private void RenameTextBox_KeyDown(object sender, System.Windows.Input.KeyEventArgs e)
     {

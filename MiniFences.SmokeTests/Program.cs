@@ -959,8 +959,10 @@ static void TestFenceControlBindingAndLayout(string root)
             looseIcon.BeginInlineRenameForTesting();
             Assert(looseIcon.IsInlineRenamingForTesting,
                 "A selected loose desktop icon should expose an inline text editor for renaming.");
+            looseIcon.SetInlineRenameTextForTesting("a very long bound folder name that must wrap");
             Assert(looseIcon.IsRenameEditorWrappedForTesting,
                 "Long loose desktop icon names should remain fully visible in a wrapped rename editor.");
+            looseIcon.SetInlineRenameTextForTesting("bound-folder");
             looseIcon.CommitInlineRenameIfPointerOutside(new System.Windows.Point(-1000, -1000));
             Assert(!looseIcon.IsInlineRenamingForTesting,
                 "Clicking outside an inline rename editor should commit it and restore the desktop icon label.");
@@ -977,6 +979,9 @@ static void TestFenceControlBindingAndLayout(string root)
                    shortRenameEditor.TextAlignment == System.Windows.TextAlignment.Left &&
                    shortRenameEditor.BorderThickness.Left == 1,
                 "Inline rename must keep selected text readable and use a compact desktop-style border.");
+            Assert(InlineRenameAppearance.MeasureWrappedHeight(longRenameEditor, "VMware Workstation Professional", InlineRenameAppearance.MaximumWidth) >
+                   InlineRenameAppearance.EditorHeight,
+                "A long desktop item name should produce a rename editor taller than one line.");
             const long noActivateStyle = 0x08000000L;
             Assert(MainWindow.UpdateInlineRenameActivationStyle(noActivateStyle, enabled: true) == 0 &&
                    MainWindow.UpdateInlineRenameActivationStyle(0, enabled: false) == noActivateStyle,

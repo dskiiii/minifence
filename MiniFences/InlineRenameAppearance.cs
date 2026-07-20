@@ -53,4 +53,21 @@ internal static class InlineRenameAppearance
             VisualTreeHelper.GetDpi(editor).PixelsPerDip);
         return Math.Clamp(Math.Ceiling(formatted.WidthIncludingTrailingWhitespace) + 6, MinimumWidth, MaximumWidth);
     }
+
+    internal static double MeasureWrappedHeight(TextBox editor, string text, double width)
+    {
+        var typeface = new Typeface(editor.FontFamily, editor.FontStyle, editor.FontWeight, editor.FontStretch);
+        var formatted = new FormattedText(
+            text ?? string.Empty,
+            CultureInfo.CurrentUICulture,
+            WpfFlowDirection.LeftToRight,
+            typeface,
+            editor.FontSize,
+            WpfBrushes.Black,
+            VisualTreeHelper.GetDpi(editor).PixelsPerDip)
+        {
+            MaxTextWidth = Math.Max(1, width - 6)
+        };
+        return Math.Max(EditorHeight, Math.Ceiling(formatted.Height) + 5);
+    }
 }

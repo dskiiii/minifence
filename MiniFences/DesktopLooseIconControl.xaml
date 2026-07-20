@@ -35,6 +35,7 @@
                 <TextBox x:Name="RenameTextBox"
                          Visibility="Collapsed"
                          FontSize="12"
+                         TextChanged="RenameTextBox_TextChanged"
                          KeyDown="RenameTextBox_KeyDown"
                          LostKeyboardFocus="RenameTextBox_LostKeyboardFocus" />
             </Grid>
