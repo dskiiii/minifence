@@ -228,19 +228,57 @@
                                            HorizontalAlignment="Center"
                                            VerticalAlignment="Center" />
                                     <Grid Grid.Row="1">
-                                        <TextBlock Text="{Binding Name}"
+                                        <TextBlock x:Name="CompactItemName"
+                                                   Text="{Binding Name}"
                                                    Foreground="White"
                                                    FontSize="12"
                                                    TextAlignment="Center"
-                                                   TextWrapping="Wrap"
+                                                   TextWrapping="NoWrap"
                                                    TextTrimming="CharacterEllipsis"
                                                    LineHeight="15"
-                                                   MaxHeight="34"
-                                                   VerticalAlignment="Top" />
-                                        <TextBox Visibility="Collapsed"
-                                                 FontSize="12"
-                                                 KeyDown="ItemRenameTextBox_KeyDown"
-                                                 LostKeyboardFocus="ItemRenameTextBox_LostKeyboardFocus" />
+                                                   MaxHeight="18"
+                                                   VerticalAlignment="Top">
+                                            <TextBlock.Style>
+                                                <Style TargetType="TextBlock">
+                                                    <Setter Property="Visibility" Value="Visible" />
+                                                    <Style.Triggers>
+                                                        <DataTrigger Binding="{Binding IsSelected, RelativeSource={RelativeSource AncestorType={x:Type ListViewItem}}}" Value="True">
+                                                            <Setter Property="Visibility" Value="Collapsed" />
+                                                        </DataTrigger>
+                                                    </Style.Triggers>
+                                                </Style>
+                                            </TextBlock.Style>
+                                        </TextBlock>
+                                        <Popup x:Name="SelectedLabelPopup"
+                                               Placement="Relative"
+                                               HorizontalOffset="4"
+                                               VerticalOffset="56"
+                                               PlacementTarget="{Binding RelativeSource={RelativeSource AncestorType={x:Type ListViewItem}}}"
+                                               IsOpen="{Binding IsSelected, RelativeSource={RelativeSource AncestorType={x:Type ListViewItem}}, Mode=OneWay}"
+                                               AllowsTransparency="True"
+                                               StaysOpen="True">
+                                            <Border Width="78"
+                                                    Padding="2,0"
+                                                    Background="#B83F6F8A"
+                                                    DataContext="{Binding PlacementTarget.DataContext, ElementName=SelectedLabelPopup}">
+                                                <Grid>
+                                                    <TextBlock Text="{Binding Name}"
+                                                               Foreground="White"
+                                                               FontSize="12"
+                                                               TextAlignment="Center"
+                                                               TextWrapping="Wrap"
+                                                               TextTrimming="None"
+                                                               LineHeight="15"
+                                                               PreviewMouseLeftButtonDown="ExpandedItemLabel_PreviewMouseLeftButtonDown"
+                                                               PreviewMouseLeftButtonUp="ExpandedItemLabel_PreviewMouseLeftButtonUp" />
+                                                    <TextBox Visibility="Collapsed"
+                                                             FontSize="12"
+                                                             TextChanged="ItemRenameTextBox_TextChanged"
+                                                             KeyDown="ItemRenameTextBox_KeyDown"
+                                                             LostKeyboardFocus="ItemRenameTextBox_LostKeyboardFocus" />
+                                                </Grid>
+                                            </Border>
+                                        </Popup>
                                     </Grid>
                                 </Grid>
                             </Border>

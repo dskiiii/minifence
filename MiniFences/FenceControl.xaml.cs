@@ -45,6 +45,7 @@ public partial class FenceControl : System.Windows.Controls.UserControl
     private TextBlock? _inlineRenameLabel;
     private System.Windows.Controls.TextBox? _inlineRenameTextBox;
     private bool _isCommittingInlineRename;
+    private bool _ignoreExpandedLabelMouseUp;
 
     public event EventHandler? Changed;
     public event EventHandler? NewFenceRequested;
@@ -664,6 +665,33 @@ public partial class FenceControl : System.Windows.Controls.UserControl
         _pendingDragItem = null;
     }
 
+    private void ExpandedItemLabel_PreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+    {
+        CancelPendingInlineRename();
+        _pendingDragItem = null;
+        _wasItemSelectedBeforeLeftDown = true;
+        _ignoreExpandedLabelMouseUp = e.ClickCount >= 2;
+        if (_ignoreExpandedLabelMouseUp && sender is TextBlock { DataContext: FolderItem item })
+        {
+            AppLogger.Log($"User double-clicked expanded item label: {item.FullPath}");
+            ItemsList.SelectedItem = item;
+            OpenItem(item);
+        }
+        e.Handled = true;
+    }
+
+    private void ExpandedItemLabel_PreviewMouseLeftButtonUp(object sender, MouseButtonEventArgs e)
+    {
+        if (!_ignoreExpandedLabelMouseUp &&
+            sender is TextBlock { DataContext: FolderItem item } label &&
+            ItemsList.SelectedItems.Contains(item))
+        {
+            ScheduleInlineRename(item, label);
+        }
+        _ignoreExpandedLabelMouseUp = false;
+        e.Handled = true;
+    }
+
     private void ScheduleInlineRename(FolderItem item, TextBlock label)
     {
         CancelPendingInlineRename();
@@ -695,6 +723,7 @@ public partial class FenceControl : System.Windows.Controls.UserControl
         _inlineRenameTextBox = editor;
         editor.Text = item.Name;
         InlineRenameAppearance.Apply(editor, item.Name);
+        ApplyFenceRenameEditorLayout(editor);
         label.Visibility = Visibility.Collapsed;
         editor.Visibility = Visibility.Visible;
         if (Window.GetWindow(this) is MainWindow mainWindow)
@@ -720,6 +749,26 @@ public partial class FenceControl : System.Windows.Controls.UserControl
             EndInlineRename();
             e.Handled = true;
         }
+    }
+
+    private void ItemRenameTextBox_TextChanged(object sender, System.Windows.Controls.TextChangedEventArgs e)
+    {
+        if (_inlineRenameItem != null && sender is System.Windows.Controls.TextBox editor)
+        {
+            ApplyFenceRenameEditorLayout(editor);
+        }
+    }
+
+    private static void ApplyFenceRenameEditorLayout(System.Windows.Controls.TextBox editor)
+    {
+        editor.Width = InlineRenameAppearance.MaximumWidth;
+        editor.MinHeight = InlineRenameAppearance.EditorHeight;
+        editor.TextWrapping = TextWrapping.Wrap;
+        editor.AcceptsReturn = true;
+        editor.HorizontalScrollBarVisibility = System.Windows.Controls.ScrollBarVisibility.Disabled;
+        editor.VerticalScrollBarVisibility = System.Windows.Controls.ScrollBarVisibility.Hidden;
+        editor.Height = InlineRenameAppearance.MeasureWrappedHeight(editor, editor.Text, InlineRenameAppearance.MaximumWidth);
+        AppLogger.Log($"Fence rename editor measured. TextLength={editor.Text.Length}; Height={editor.Height:0.##}");
     }
 
     private void ItemRenameTextBox_LostKeyboardFocus(object sender, KeyboardFocusChangedEventArgs e)
@@ -812,6 +861,25 @@ public partial class FenceControl : System.Windows.Controls.UserControl
     }
 
     internal void SelectItemForTesting(int index) => ItemsList.SelectedIndex = index;
+
+    internal bool BeginItemInlineRenameForTesting(int index)
+    {
+        if (index < 0 || index >= ItemsList.Items.Count) return false;
+        ItemsList.SelectedIndex = index;
+        ItemsList.UpdateLayout();
+        if (ItemsList.ItemContainerGenerator.ContainerFromIndex(index) is not System.Windows.Controls.ListViewItem container)
+            return false;
+        container.ApplyTemplate();
+        var presenter = FindVisualChild<System.Windows.Controls.ContentPresenter>(container);
+        if (presenter?.ContentTemplate == null ||
+            presenter.ContentTemplate.FindName("SelectedLabelPopup", presenter) is not System.Windows.Controls.Primitives.Popup popup ||
+            popup.Child is not DependencyObject popupChild)
+            return false;
+        var label = FindVisualChild<TextBlock>(popupChild);
+        if (label?.DataContext is not FolderItem item) return false;
+        BeginInlineRename(item, label);
+        return true;
+    }
 
     private void Item_MouseMove(object sender, System.Windows.Input.MouseEventArgs e)
     {

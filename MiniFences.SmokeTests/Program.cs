@@ -985,6 +985,9 @@ static void TestFenceControlBindingAndLayout(string root)
             Assert(InlineRenameAppearance.MeasureWrappedHeight(longRenameEditor, "Workstation Pro", InlineRenameAppearance.MaximumWidth) >
                    InlineRenameAppearance.EditorHeight,
                 "A desktop item name that only slightly exceeds the editor width must still wrap to a second line.");
+            Assert(InlineRenameAppearance.MeasureWrappedHeight(longRenameEditor, "VMware Workstation Pro", InlineRenameAppearance.MaximumWidth) >
+                   InlineRenameAppearance.MeasureWrappedHeight(longRenameEditor, "Workstation Pro", InlineRenameAppearance.MaximumWidth),
+                "Word-aware wrapping must allocate a third line for VMware Workstation Pro instead of scrolling its first word away.");
             const long noActivateStyle = 0x08000000L;
             Assert(MainWindow.UpdateInlineRenameActivationStyle(noActivateStyle, enabled: true) == 0 &&
                    MainWindow.UpdateInlineRenameActivationStyle(0, enabled: false) == noActivateStyle,

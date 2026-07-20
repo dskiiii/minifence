@@ -59,8 +59,7 @@ internal static class InlineRenameAppearance
         var typeface = new Typeface(editor.FontFamily, editor.FontStyle, editor.FontWeight, editor.FontStretch);
         var pixelsPerDip = VisualTreeHelper.GetDpi(editor).PixelsPerDip;
         var availableWidth = Math.Max(1, width - 6);
-        var totalLines = 0;
-        var lineHeight = 0d;
+        var totalHeight = 0d;
         foreach (var logicalLine in (text ?? string.Empty).Replace("\r\n", "\n").Split('\n'))
         {
             var formatted = new FormattedText(
@@ -71,9 +70,12 @@ internal static class InlineRenameAppearance
                 editor.FontSize,
                 WpfBrushes.Black,
                 pixelsPerDip);
-            lineHeight = Math.Max(lineHeight, formatted.Height);
-            totalLines += Math.Max(1, (int)Math.Ceiling(formatted.WidthIncludingTrailingWhitespace / availableWidth));
+            var unwrappedWidth = formatted.WidthIncludingTrailingWhitespace;
+            var singleLineHeight = formatted.Height;
+            formatted.MaxTextWidth = availableWidth;
+            var widthBasedHeight = Math.Max(1, Math.Ceiling(unwrappedWidth / availableWidth)) * singleLineHeight;
+            totalHeight += Math.Max(formatted.Height, widthBasedHeight);
         }
-        return Math.Max(EditorHeight, Math.Ceiling(totalLines * lineHeight) + 5);
+        return Math.Max(EditorHeight, Math.Ceiling(totalHeight) + 5);
     }
 }
