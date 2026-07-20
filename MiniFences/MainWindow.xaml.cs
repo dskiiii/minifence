@@ -321,6 +321,7 @@ public partial class MainWindow : Window
             control.SetSelected(_selectedLoosePaths.Contains(control.Item.FullPath));
             control.DragPaths = control.IsSelected ? dragPaths : [control.Item.FullPath];
         }
+        Dispatcher.BeginInvoke(UpdateDesktopWindowRegion, DispatcherPriority.Loaded);
     }
 
     private static bool ShouldShowLooseDesktopItem(string path)
@@ -2331,8 +2332,10 @@ public partial class MainWindow : Window
                 {
                     var left = Canvas.GetLeft(icon);
                     var top = Canvas.GetTop(icon);
+                    var width = icon.ActualWidth > 0 ? icon.ActualWidth : icon.Width;
+                    var height = icon.ActualHeight > 0 ? icon.ActualHeight : icon.MinHeight;
                     var topLeft = transform.Transform(new System.Windows.Point(left, top));
-                    var bottomRight = transform.Transform(new System.Windows.Point(left + icon.Width, top + icon.Height));
+                    var bottomRight = transform.Transform(new System.Windows.Point(left + width, top + height));
                     var iconRegion = CreateRectRgn(
                         (int)Math.Floor(topLeft.X), (int)Math.Floor(topLeft.Y),
                         (int)Math.Ceiling(bottomRight.X) + 1, (int)Math.Ceiling(bottomRight.Y) + 1);
@@ -2405,7 +2408,9 @@ public partial class MainWindow : Window
         foreach (var icon in Workspace.Children.OfType<DesktopLooseIconControl>())
         {
             if (icon.Visibility != Visibility.Visible) continue;
-            var bounds = new Rect(Canvas.GetLeft(icon), Canvas.GetTop(icon), icon.Width, icon.Height);
+            var width = icon.ActualWidth > 0 ? icon.ActualWidth : icon.Width;
+            var height = icon.ActualHeight > 0 ? icon.ActualHeight : icon.MinHeight;
+            var bounds = new Rect(Canvas.GetLeft(icon), Canvas.GetTop(icon), width, height);
             if (bounds.Contains(workspacePoint)) return true;
         }
 

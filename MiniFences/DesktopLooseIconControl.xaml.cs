@@ -31,6 +31,11 @@ public partial class DesktopLooseIconControl : System.Windows.Controls.UserContr
     public bool IsSelected { get; private set; }
     internal bool IsInlineRenamingForTesting =>
         _isInlineRenaming && RenameTextBox.Visibility == Visibility.Visible && NameText.Visibility == Visibility.Collapsed;
+    internal bool IsNameExpandedForTesting =>
+        IsSelected && double.IsNaN(Height) && NameText.TextWrapping == TextWrapping.Wrap &&
+        NameText.TextTrimming == TextTrimming.None;
+    internal bool IsRenameEditorWrappedForTesting =>
+        RenameTextBox.TextWrapping == TextWrapping.Wrap && double.IsNaN(RenameTextBox.Height);
     public event Action<DesktopLooseIconControl, ModifierKeys>? SelectionRequested;
     public event EventHandler? ItemsChanged;
     public event EventHandler? DesktopItemDragStarted;
@@ -41,10 +46,15 @@ public partial class DesktopLooseIconControl : System.Windows.Controls.UserContr
     public void SetSelected(bool selected)
     {
         IsSelected = selected;
+        Height = selected ? double.NaN : 92;
+        NameText.TextWrapping = selected ? TextWrapping.Wrap : TextWrapping.NoWrap;
+        NameText.TextTrimming = selected ? TextTrimming.None : TextTrimming.CharacterEllipsis;
+        System.Windows.Controls.Panel.SetZIndex(this, selected ? 90 : 0);
         Chrome.Background = selected
             ? new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromArgb(110, 49, 130, 206))
             : System.Windows.Media.Brushes.Transparent;
         Chrome.BorderBrush = selected ? System.Windows.Media.Brushes.LightSkyBlue : System.Windows.Media.Brushes.Transparent;
+        InvalidateMeasure();
     }
 
     public void CloseContextMenu(bool force = false, System.Windows.Point? screenPoint = null)
@@ -244,6 +254,12 @@ public partial class DesktopLooseIconControl : System.Windows.Controls.UserContr
         _isInlineRenaming = true;
         RenameTextBox.Text = Item.Name;
         InlineRenameAppearance.Apply(RenameTextBox, Item.Name);
+        RenameTextBox.Width = InlineRenameAppearance.MaximumWidth;
+        RenameTextBox.Height = double.NaN;
+        RenameTextBox.MinHeight = InlineRenameAppearance.EditorHeight;
+        RenameTextBox.TextWrapping = TextWrapping.Wrap;
+        RenameTextBox.HorizontalScrollBarVisibility = System.Windows.Controls.ScrollBarVisibility.Disabled;
+        RenameTextBox.VerticalScrollBarVisibility = System.Windows.Controls.ScrollBarVisibility.Hidden;
         NameText.Visibility = Visibility.Collapsed;
         RenameTextBox.Visibility = Visibility.Visible;
         if (Window.GetWindow(this) is MainWindow mainWindow)

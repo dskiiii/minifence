@@ -954,9 +954,13 @@ static void TestFenceControlBindingAndLayout(string root)
                 Kind = "Folder"
             });
             looseIcon.SetSelected(true);
+            Assert(looseIcon.IsNameExpandedForTesting,
+                "A selected loose desktop icon should expand its complete wrapped label above neighboring icons.");
             looseIcon.BeginInlineRenameForTesting();
             Assert(looseIcon.IsInlineRenamingForTesting,
                 "A selected loose desktop icon should expose an inline text editor for renaming.");
+            Assert(looseIcon.IsRenameEditorWrappedForTesting,
+                "Long loose desktop icon names should remain fully visible in a wrapped rename editor.");
             looseIcon.CommitInlineRenameIfPointerOutside(new System.Windows.Point(-1000, -1000));
             Assert(!looseIcon.IsInlineRenamingForTesting,
                 "Clicking outside an inline rename editor should commit it and restore the desktop icon label.");
