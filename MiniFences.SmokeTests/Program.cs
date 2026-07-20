@@ -141,6 +141,11 @@ static void TestDesktopDragData()
            !DesktopDragData.ShouldCancelExplorerDesktopDrop(System.Windows.DragDropKeyStates.None, true, overMiniFencesSurface: true) &&
            !DesktopDragData.ShouldCancelExplorerDesktopDrop(System.Windows.DragDropKeyStates.None, false),
         "A completed drop on Explorer should be canceled without blocking valid drops on a MiniFences surface.");
+    Assert(MainWindow.IsPointInsideWorkspace(new System.Windows.Point(0, 0), 1920, 1080) &&
+           MainWindow.IsPointInsideWorkspace(new System.Windows.Point(1919, 1079), 1920, 1080) &&
+           !MainWindow.IsPointInsideWorkspace(new System.Windows.Point(1920, 1079), 1920, 1080) &&
+           !MainWindow.IsPointInsideWorkspace(new System.Windows.Point(-1, 0), 1920, 1080),
+        "The full MiniFences workspace should remain a valid desktop drag-and-drop surface.");
     Assert(DesktopDragData.ShouldReleaseDesktopMembershipAfterDrag(System.Windows.DragDropEffects.None, true) &&
            !DesktopDragData.ShouldReleaseDesktopMembershipAfterDrag(System.Windows.DragDropEffects.Copy, false),
         "Only a canceled Explorer-desktop drop may release Fence membership; external uploads must keep it.");

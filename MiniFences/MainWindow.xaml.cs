@@ -246,7 +246,7 @@ public partial class MainWindow : Window
                 var top = 8 + row * 96;
                 var control = new DesktopLooseIconControl(item, _loc);
                 control.IsExplorerDesktopPointForDrag = IsExplorerDesktopPoint;
-                control.IsMiniFencesSurfacePointForDrag = IsPointOverVisibleFence;
+                control.IsMiniFencesSurfacePointForDrag = IsPointOverWorkspace;
                 control.SelectionRequested += HandleLooseIconSelection;
                 control.ItemsChanged += (_, _) => RenderFences();
                 control.DesktopItemDragStarted += (_, _) => BeginDesktopItemDrag();
@@ -370,7 +370,7 @@ public partial class MainWindow : Window
         control.ClickTitleToExpandEnabled = _config.ClickTitleToExpand;
         control.HoverTitleToExpandEnabled = _config.HoverTitleToExpand;
         control.IsExplorerDesktopPointForDrag = IsExplorerDesktopPoint;
-        control.IsMiniFencesSurfacePointForDrag = IsPointOverVisibleFence;
+        control.IsMiniFencesSurfacePointForDrag = IsPointOverWorkspace;
         control.SetLocalization(_loc);
         control.SetTabStatus(tabCount, tabIndex, tabTitles,
             string.Equals(_config.TabViewMode, "Strip", StringComparison.OrdinalIgnoreCase), _config.HoverSwitchTabs,
@@ -2371,6 +2371,24 @@ public partial class MainWindow : Window
     {
         return IsScreenPointOverVisibleFence(new System.Windows.Point(screenPoint.X, screenPoint.Y));
     }
+
+    private bool IsPointOverWorkspace(System.Drawing.Point screenPoint)
+    {
+        try
+        {
+            var workspacePoint = Workspace.PointFromScreen(new System.Windows.Point(screenPoint.X, screenPoint.Y));
+            var width = Workspace.ActualWidth > 0 ? Workspace.ActualWidth : ActualWidth;
+            var height = Workspace.ActualHeight > 0 ? Workspace.ActualHeight : ActualHeight;
+            return IsPointInsideWorkspace(workspacePoint, width, height);
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    internal static bool IsPointInsideWorkspace(System.Windows.Point point, double width, double height) =>
+        width > 0 && height > 0 && point.X >= 0 && point.Y >= 0 && point.X < width && point.Y < height;
 
     private bool IsScreenPointOverVisibleFence(System.Windows.Point screenPoint)
     {
