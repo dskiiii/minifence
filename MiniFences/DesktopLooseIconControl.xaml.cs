@@ -282,12 +282,14 @@ public partial class DesktopLooseIconControl : System.Windows.Controls.UserContr
         RenameTextBox.Width = InlineRenameAppearance.MaximumWidth;
         RenameTextBox.MinHeight = InlineRenameAppearance.EditorHeight;
         RenameTextBox.TextWrapping = TextWrapping.Wrap;
+        RenameTextBox.AcceptsReturn = true;
         RenameTextBox.HorizontalScrollBarVisibility = System.Windows.Controls.ScrollBarVisibility.Disabled;
         RenameTextBox.VerticalScrollBarVisibility = System.Windows.Controls.ScrollBarVisibility.Hidden;
         RenameTextBox.Height = InlineRenameAppearance.MeasureWrappedHeight(
             RenameTextBox,
             RenameTextBox.Text,
             InlineRenameAppearance.MaximumWidth);
+        AppLogger.Log($"Desktop rename editor measured. TextLength={RenameTextBox.Text.Length}; Height={RenameTextBox.Height:0.##}");
     }
 
     private void RenameTextBox_KeyDown(object sender, System.Windows.Input.KeyEventArgs e)

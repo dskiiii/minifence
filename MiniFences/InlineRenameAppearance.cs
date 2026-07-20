@@ -57,17 +57,23 @@ internal static class InlineRenameAppearance
     internal static double MeasureWrappedHeight(TextBox editor, string text, double width)
     {
         var typeface = new Typeface(editor.FontFamily, editor.FontStyle, editor.FontWeight, editor.FontStretch);
-        var formatted = new FormattedText(
-            text ?? string.Empty,
-            CultureInfo.CurrentUICulture,
-            WpfFlowDirection.LeftToRight,
-            typeface,
-            editor.FontSize,
-            WpfBrushes.Black,
-            VisualTreeHelper.GetDpi(editor).PixelsPerDip)
+        var pixelsPerDip = VisualTreeHelper.GetDpi(editor).PixelsPerDip;
+        var availableWidth = Math.Max(1, width - 6);
+        var totalLines = 0;
+        var lineHeight = 0d;
+        foreach (var logicalLine in (text ?? string.Empty).Replace("\r\n", "\n").Split('\n'))
         {
-            MaxTextWidth = Math.Max(1, width - 6)
-        };
-        return Math.Max(EditorHeight, Math.Ceiling(formatted.Height) + 5);
+            var formatted = new FormattedText(
+                string.IsNullOrEmpty(logicalLine) ? " " : logicalLine,
+                CultureInfo.CurrentUICulture,
+                WpfFlowDirection.LeftToRight,
+                typeface,
+                editor.FontSize,
+                WpfBrushes.Black,
+                pixelsPerDip);
+            lineHeight = Math.Max(lineHeight, formatted.Height);
+            totalLines += Math.Max(1, (int)Math.Ceiling(formatted.WidthIncludingTrailingWhitespace / availableWidth));
+        }
+        return Math.Max(EditorHeight, Math.Ceiling(totalLines * lineHeight) + 5);
     }
 }
