@@ -199,6 +199,7 @@
                                             </Trigger>
                                             <Trigger Property="IsSelected" Value="True">
                                                 <Setter TargetName="ItemChrome" Property="Background" Value="#FF3A5569" />
+                                                <Setter TargetName="ItemChrome" Property="CornerRadius" Value="4,4,0,0" />
                                             </Trigger>
                                         </ControlTemplate.Triggers>
                                     </ControlTemplate>
@@ -265,11 +266,13 @@
                         SizeChanged="ItemLabelOverlayCanvas_SizeChanged">
                     <Border x:Name="ExpandedItemLabelOverlay"
                             Width="86"
+                            MinHeight="36"
                             Background="Transparent"
                             Visibility="Collapsed">
                         <Grid>
-                            <Border Margin="0,36,0,0"
+                            <Border Margin="0,34,0,0"
                                     Background="#FF3A5569"
+                                    CornerRadius="0,0,4,4"
                                     IsHitTestVisible="False" />
                             <TextBlock x:Name="ExpandedItemLabelText"
                                        Margin="4,0"
