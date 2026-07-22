@@ -2106,6 +2106,10 @@ public partial class MainWindow : Window
     private void HandleGlobalLeftButtonDown(System.Drawing.Point screenPoint, long clickTicks)
     {
         CommitInlineRenamesOutside(screenPoint);
+        if (!IsPointOverVisibleFence(screenPoint))
+        {
+            foreach (var fence in Workspace.Children.OfType<FenceControl>()) fence.ClearItemSelection();
+        }
         var clickedDesktopBlank = IsScreenPointInsideDesktopWorkArea(screenPoint) &&
                                   !IsPointOverVisibleFence(screenPoint) &&
                                   IsExplorerDesktopPoint(screenPoint);

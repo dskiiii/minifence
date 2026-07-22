@@ -14,6 +14,11 @@ internal static class Program
         Directory.CreateDirectory(testFolder);
         var testFile = Path.Combine(testFolder, "VMware Workstation Pro.txt");
         if (!File.Exists(testFile)) File.WriteAllText(testFile, "visual verification");
+        for (var index = 1; index <= 12; index++)
+        {
+            var filler = Path.Combine(testFolder, $"ZZ verification item {index:00}.txt");
+            if (!File.Exists(filler)) File.WriteAllText(filler, "scroll verification");
+        }
 
         var config = new FenceConfig
         {
@@ -44,10 +49,30 @@ internal static class Program
         var mode = args.FirstOrDefault()?.Trim().ToLowerInvariant() ?? "normal";
         window.Loaded += (_, _) => window.Dispatcher.BeginInvoke(() =>
         {
-            if (mode is "selected" or "rename") fence.SelectItemForTesting(0);
+            if (mode is "selected" or "rename" or "scrolled" or "cleared") fence.SelectItemForTesting(0);
             if (mode == "rename")
             {
                 window.Dispatcher.BeginInvoke(() => fence.BeginItemInlineRenameForTesting(0));
+            }
+            if (mode == "scrolled")
+            {
+                window.Dispatcher.BeginInvoke(() =>
+                {
+                    fence.ScrollItemsForTesting(36);
+                    window.Title = fence.ExpandedOverlayTracksSelectedItemForTesting()
+                        ? "MiniFences Scroll Verification - PASS"
+                        : "MiniFences Scroll Verification - FAIL";
+                });
+            }
+            if (mode == "cleared")
+            {
+                window.Dispatcher.BeginInvoke(() =>
+                {
+                    fence.RaiseBlankAreaLeftClickForTesting();
+                    window.Title = fence.SelectedItemCountForTesting == 0
+                        ? "MiniFences Blank Click Verification - PASS"
+                        : "MiniFences Blank Click Verification - FAIL";
+                });
             }
         });
         var app = new Application();

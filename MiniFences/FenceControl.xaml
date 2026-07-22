@@ -7,6 +7,7 @@
              DragLeave="FenceControl_DragLeave"
              DragOver="FenceControl_DragOver"
              Drop="FenceControl_Drop"
+             PreviewMouseLeftButtonDown="FenceControl_PreviewMouseLeftButtonDown"
              MouseEnter="FenceControl_MouseEnter"
              MouseLeave="FenceControl_MouseLeave"
              MinWidth="240"
@@ -146,6 +147,8 @@
                           SelectionMode="Extended"
                           ScrollViewer.HorizontalScrollBarVisibility="Disabled"
                           ContextMenuOpening="ItemsList_ContextMenuOpening"
+                          SelectionChanged="ItemsList_SelectionChanged"
+                          ScrollViewer.ScrollChanged="ItemsList_ScrollChanged"
                           PreviewMouseRightButtonDown="ItemsList_PreviewMouseRightButtonDown"
                           PreviewMouseLeftButtonDown="ItemsList_PreviewMouseLeftButtonDown"
                           PreviewMouseMove="ItemsList_PreviewMouseMove"
@@ -249,42 +252,43 @@
                                                 </Style>
                                             </TextBlock.Style>
                                         </TextBlock>
-                                        <Popup x:Name="SelectedLabelPopup"
-                                               Placement="Relative"
-                                               HorizontalOffset="4"
-                                               VerticalOffset="56"
-                                               PlacementTarget="{Binding RelativeSource={RelativeSource AncestorType={x:Type ListViewItem}}}"
-                                               IsOpen="{Binding IsSelected, RelativeSource={RelativeSource AncestorType={x:Type ListViewItem}}, Mode=OneWay}"
-                                               AllowsTransparency="True"
-                                               StaysOpen="True">
-                                            <Border Width="78"
-                                                    Padding="2,0"
-                                                    Background="#B83F6F8A"
-                                                    DataContext="{Binding PlacementTarget.DataContext, ElementName=SelectedLabelPopup}">
-                                                <Grid>
-                                                    <TextBlock Text="{Binding Name}"
-                                                               Foreground="White"
-                                                               FontSize="12"
-                                                               TextAlignment="Center"
-                                                               TextWrapping="Wrap"
-                                                               TextTrimming="None"
-                                                               LineHeight="15"
-                                                               PreviewMouseLeftButtonDown="ExpandedItemLabel_PreviewMouseLeftButtonDown"
-                                                               PreviewMouseLeftButtonUp="ExpandedItemLabel_PreviewMouseLeftButtonUp" />
-                                                    <TextBox Visibility="Collapsed"
-                                                             FontSize="12"
-                                                             TextChanged="ItemRenameTextBox_TextChanged"
-                                                             KeyDown="ItemRenameTextBox_KeyDown"
-                                                             LostKeyboardFocus="ItemRenameTextBox_LostKeyboardFocus" />
-                                                </Grid>
-                                            </Border>
-                                        </Popup>
                                     </Grid>
                                 </Grid>
                             </Border>
                         </DataTemplate>
                     </ListView.ItemTemplate>
                 </ListView>
+                <Canvas x:Name="ItemLabelOverlayCanvas"
+                        Grid.Row="1"
+                        ClipToBounds="True"
+                        Panel.ZIndex="40"
+                        SizeChanged="ItemLabelOverlayCanvas_SizeChanged">
+                    <Border x:Name="ExpandedItemLabelOverlay"
+                            Width="78"
+                            Padding="2,0"
+                            Background="#B83F6F8A"
+                            Visibility="Collapsed">
+                        <Grid>
+                            <TextBlock x:Name="ExpandedItemLabelText"
+                                       Foreground="White"
+                                       FontSize="12"
+                                       TextAlignment="Center"
+                                       TextWrapping="Wrap"
+                                       TextTrimming="None"
+                                       LineHeight="15"
+                                       PreviewMouseLeftButtonDown="ExpandedItemLabel_PreviewMouseLeftButtonDown"
+                                       PreviewMouseLeftButtonUp="ExpandedItemLabel_PreviewMouseLeftButtonUp" />
+                            <TextBox x:Name="ExpandedItemRenameTextBox"
+                                     Visibility="Collapsed"
+                                     FontSize="12"
+                                     TextAlignment="Center"
+                                     HorizontalContentAlignment="Center"
+                                     TextChanged="ItemRenameTextBox_TextChanged"
+                                     KeyDown="ItemRenameTextBox_KeyDown"
+                                     LostKeyboardFocus="ItemRenameTextBox_LostKeyboardFocus" />
+                        </Grid>
+                    </Border>
+                </Canvas>
             </Grid>
 
             <DockPanel x:Name="FooterPanel" Grid.Row="2" Margin="8,0,24,4">
