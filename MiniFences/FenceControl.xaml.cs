@@ -631,7 +631,7 @@ public partial class FenceControl : System.Windows.Controls.UserControl
 
         try
         {
-            var point = container.TranslatePoint(new System.Windows.Point(4, 56), ItemLabelOverlayCanvas);
+            var point = container.TranslatePoint(new System.Windows.Point(0, 56), ItemLabelOverlayCanvas);
             Canvas.SetLeft(ExpandedItemLabelOverlay, point.X);
             Canvas.SetTop(ExpandedItemLabelOverlay, point.Y);
             ExpandedItemLabelOverlay.DataContext = item;
@@ -955,7 +955,7 @@ public partial class FenceControl : System.Windows.Controls.UserControl
         if (ItemsList.SelectedItem is not FolderItem item ||
             ItemsList.ItemContainerGenerator.ContainerFromItem(item) is not System.Windows.Controls.ListViewItem container)
             return false;
-        var expected = container.TranslatePoint(new System.Windows.Point(4, 56), ItemLabelOverlayCanvas);
+        var expected = container.TranslatePoint(new System.Windows.Point(0, 56), ItemLabelOverlayCanvas);
         return Math.Abs(Canvas.GetLeft(ExpandedItemLabelOverlay) - expected.X) < 0.5 &&
                Math.Abs(Canvas.GetTop(ExpandedItemLabelOverlay) - expected.Y) < 0.5;
     }
