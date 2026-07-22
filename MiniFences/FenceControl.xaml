@@ -198,7 +198,7 @@
                                                 <Setter TargetName="ItemChrome" Property="Background" Value="#24FFFFFF" />
                                             </Trigger>
                                             <Trigger Property="IsSelected" Value="True">
-                                                <Setter TargetName="ItemChrome" Property="Background" Value="#663F7FA8" />
+                                                <Setter TargetName="ItemChrome" Property="Background" Value="#FF3A5569" />
                                             </Trigger>
                                         </ControlTemplate.Triggers>
                                     </ControlTemplate>
@@ -269,7 +269,7 @@
                             Visibility="Collapsed">
                         <Grid>
                             <Border Margin="0,36,0,0"
-                                    Background="#663F7FA8"
+                                    Background="#FF3A5569"
                                     IsHitTestVisible="False" />
                             <TextBlock x:Name="ExpandedItemLabelText"
                                        Margin="4,0"
