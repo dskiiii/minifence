@@ -27,6 +27,7 @@ public partial class DesktopLooseIconControl : System.Windows.Controls.UserContr
     }
 
     public FolderItem Item { get; }
+    public ActionHistoryService? ActionHistory { get; set; }
     public IReadOnlyList<string> DragPaths { get; set; } = [];
     public bool IsSelected { get; private set; }
     internal bool IsInlineRenamingForTesting =>
@@ -179,7 +180,10 @@ public partial class DesktopLooseIconControl : System.Windows.Controls.UserContr
             return;
         }
 
-        var result = _service.MoveIntoFolder(paths, Item.FullPath);
+        var result = ActionHistory is null
+            ? _service.MoveIntoFolder(paths, Item.FullPath)
+            : ActionHistory.ExecuteFileMove($"移动到文件夹“{Item.Name}”",
+                () => _service.MoveIntoFolder(paths, Item.FullPath));
         e.Effects = result.Moved > 0 ? System.Windows.DragDropEffects.Move : System.Windows.DragDropEffects.None;
         AppLogger.Log($"Loose folder icon drop completed. Destination={Item.FullPath}; Moved={result.Moved}; Skipped={result.Skipped}; Errors={result.Errors.Count}");
         if (result.Errors.Count > 0)
@@ -346,7 +350,10 @@ public partial class DesktopLooseIconControl : System.Windows.Controls.UserContr
                 return;
             }
 
-            if (!_service.TryRenameItem(Item, newName, out _, out var error))
+            var renameSucceeded = ActionHistory is null
+                ? _service.TryRenameItem(Item, newName, out var renamedPath, out var error)
+                : ActionHistory.ExecuteRename(_service, Item, newName, out renamedPath, out error);
+            if (!renameSucceeded)
             {
                 System.Windows.MessageBox.Show(error, "MiniFences", MessageBoxButton.OK, MessageBoxImage.Warning);
                 RenameTextBox.Focus();
@@ -387,7 +394,10 @@ public partial class DesktopLooseIconControl : System.Windows.Controls.UserContr
                 "MiniFences",
                 MessageBoxButton.YesNo,
                 MessageBoxImage.Question) != MessageBoxResult.Yes) return;
-        if (!_service.TryDeleteItem(Item, out var error))
+        var deleted = ActionHistory is null
+            ? _service.TryDeleteItem(Item, out var error)
+            : ActionHistory.ExecuteRecycleDelete(_service, Item, out error);
+        if (!deleted)
             System.Windows.MessageBox.Show(error, "MiniFences", MessageBoxButton.OK, MessageBoxImage.Warning);
     }
 }

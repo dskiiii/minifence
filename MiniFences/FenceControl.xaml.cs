@@ -1,4 +1,6 @@
 using System.Diagnostics;
+using System.IO;
+using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Media;
 using System.Windows.Media.Effects;
@@ -15,10 +17,13 @@ namespace MiniFences;
 public partial class FenceControl : System.Windows.Controls.UserControl
 {
     private const double ExpandedMinHeight = 180;
-    private const double CollapsedHeight = 34;
+    internal const double CollapsedHeight = 34;
+    private static FenceAppearance? _copiedStyle;
     private readonly FolderItemService _folderItemService = new();
     private readonly ShellContextMenuService _shellContextMenuService = new();
     private readonly AutoOrganizerService _autoOrganizerService = new();
+    public ActionHistoryService? ActionHistory { get; set; }
+    public AppConfig? ActionHistoryConfig { get; set; }
     private readonly DispatcherTimer _refreshTimer;
     private System.IO.FileSystemWatcher? _folderWatcher;
     private string? _watchedFolderPath;
@@ -36,9 +41,14 @@ public partial class FenceControl : System.Windows.Controls.UserControl
     private string? _lastLoadError;
     private bool _isHoverExpanded;
     private bool _isResizing;
+    private bool _resizeFromTop;
+    private double _resizeBottomAnchor;
     private bool _isMergeCompactPreview;
+    private double _mergePreviewLeft;
+    private double _mergePreviewWidth;
     private bool _shiftDetachHeaderDrag;
     private bool _shiftHeaderDrag;
+    private string? _headerDragDockEdge;
     private bool _wasItemSelectedBeforeLeftDown;
     private DispatcherTimer? _inlineRenameTimer;
     private FolderItem? _inlineRenameItem;
@@ -46,6 +56,10 @@ public partial class FenceControl : System.Windows.Controls.UserControl
     private System.Windows.Controls.TextBox? _inlineRenameTextBox;
     private bool _isCommittingInlineRename;
     private bool _ignoreExpandedLabelMouseUp;
+    private CancellationTokenSource? _iconLoadCancellation;
+    private readonly Stack<string> _portalBackHistory = new();
+    private IReadOnlyList<FenceConfig>? _tabConfigs;
+    private DataTemplate? _iconItemTemplate;
 
     public event EventHandler? Changed;
     public event EventHandler? NewFenceRequested;
@@ -58,7 +72,9 @@ public partial class FenceControl : System.Windows.Controls.UserControl
     public event EventHandler? PreviousTabRequested;
     public event Action<int>? TabSelectedRequested;
     public event Action<int, int>? TabReorderRequested;
-    public event Action<int>? TabDetachRequested;
+    public event Action<int, System.Drawing.Point>? TabDetachRequested;
+    public event Action<int>? TabDragStarted;
+    public event Action<string>? TabMergeRequested;
     public event EventHandler? UnstackRequested;
     public event EventHandler<DesktopItemsAssignedEventArgs>? DesktopItemsAssigned;
     public event EventHandler<DesktopItemsReleasedEventArgs>? DesktopItemsReleased;
@@ -72,10 +88,14 @@ public partial class FenceControl : System.Windows.Controls.UserControl
 
     public FenceConfig Config { get; }
     public bool SnapToGrid { get; set; }
+    public int GridSize { get; set; } = 16;
+    public bool SnapWhileDragging { get; set; }
     public bool RollupEnabled { get; set; } = true;
     public bool DoubleClickRollupEnabled { get; set; } = true;
     public bool ClickTitleToExpandEnabled { get; set; }
     public bool HoverTitleToExpandEnabled { get; set; }
+    public bool BottomDockTitleAtBottom { get; set; } = true;
+    public bool TopDockTitleAtBottomOnExpand { get; set; }
     internal bool IsVisuallyCollapsed => Config.IsCollapsed && !_isHoverExpanded;
     internal bool IsTitleDragging => _isDragging;
     internal bool IsShiftDetachHeaderDrag => _shiftDetachHeaderDrag;
@@ -85,11 +105,21 @@ public partial class FenceControl : System.Windows.Controls.UserControl
     internal double HeaderDragStartTop => _topStart;
     internal Func<System.Drawing.Point, bool>? IsExplorerDesktopPointForDrag { get; set; }
     internal Func<System.Drawing.Point, bool>? IsMiniFencesSurfacePointForDrag { get; set; }
+    internal Func<System.Drawing.Point, Rect>? DragWorkAreaProvider { get; set; }
+    internal bool AllowTabDetachWithoutShiftForTesting { get; set; }
 
     internal IReadOnlyList<FolderItem> LoadedItemsForTesting =>
         ItemsList.Items.OfType<FolderItem>().ToArray();
+    internal int RealizedItemCountForTesting =>
+        Enumerable.Range(0, ItemsList.Items.Count)
+            .Count(index => ItemsList.ItemContainerGenerator.ContainerFromIndex(index) is not null);
+    internal string PortalPathForTesting => GetPortalPath();
+    internal bool IsPortalNavigationVisibleForTesting => PortalNavigationBar.Visibility == Visibility.Visible;
+    internal void NavigatePortalForTesting(string path) => NavigatePortal(path, true);
+    internal void NavigatePortalUpForTesting() => PortalUpButton_Click(this, new RoutedEventArgs());
     internal string DisplayedTitleForTesting => TitleText.Text;
     internal bool IsCollapsedForTesting => Config.IsCollapsed;
+    internal bool IsTitleAtBottomForTesting => Grid.GetRow(TitleBar) == 2;
     internal bool IsContentVisibleForTesting => ContentArea.Visibility == Visibility.Visible &&
                                                  FooterPanel.Visibility == Visibility.Visible;
     internal System.Windows.HorizontalAlignment TitleAlignmentForTesting => TitleText.HorizontalAlignment;
@@ -98,11 +128,22 @@ public partial class FenceControl : System.Windows.Controls.UserControl
     internal bool IsInnerPanelTransparentForTesting => ItemsList.Background == System.Windows.Media.Brushes.Transparent;
     internal bool IsFooterVisibleForTesting => FooterPanel.Visibility == Visibility.Visible;
     internal bool IsResizeHandleVisibleForTesting => ResizeThumb.Visibility == Visibility.Visible;
+    internal bool IsResizeHandleAtTopForTesting => ResizeThumb.VerticalAlignment == VerticalAlignment.Top;
+    internal string ResizeGripOrientationForTesting => ResizeThumb.Tag?.ToString() ?? "";
     internal bool IsManipulationLockedForTesting => Config.IsLocked;
     internal bool IsTabNavigationVisibleForTesting => TabNavigationPanel.Visibility == Visibility.Visible;
+    internal Window CreateTabDragPreviewForTesting() => CreateTabDragPreview(0);
     internal bool HasFolderWatcherForTesting => _folderWatcher != null;
     internal IReadOnlyList<GridLength> TabColumnWidthsForTesting =>
         TabStripPanel.ColumnDefinitions.Select(column => column.Width).ToArray();
+    internal int VisibleTabCountForTesting =>
+        TabStripPanel.Children.OfType<UIElement>().Count(child => child.Visibility == Visibility.Visible);
+    internal bool AreTabTitlesCenteredForTesting =>
+        TabStripPanel.Children.OfType<Border>()
+            .Select(border => border.Child)
+            .OfType<TextBlock>()
+            .All(text => text.HorizontalAlignment == System.Windows.HorizontalAlignment.Stretch &&
+                         text.TextAlignment == TextAlignment.Center);
     internal int SelectedItemCountForTesting => ItemsList.SelectedItems.Count;
     internal void SetHoverExpandedForTesting(bool expanded) => SetHoverExpanded(expanded);
     internal void SetHoverExpandedFromDesktopHost(bool expanded) => SetHoverExpanded(expanded);
@@ -111,6 +152,7 @@ public partial class FenceControl : System.Windows.Controls.UserControl
     {
         Config = config;
         InitializeComponent();
+        _iconItemTemplate = ItemsList.ItemTemplate;
         _refreshTimer = new DispatcherTimer
         {
             Interval = TimeSpan.FromMilliseconds(350)
@@ -125,6 +167,11 @@ public partial class FenceControl : System.Windows.Controls.UserControl
         TitleText.Text = Config.Title;
         ApplyStyle();
         ApplyCollapsedState();
+        ItemsList.ItemContainerGenerator.StatusChanged += (_, _) =>
+        {
+            if (ItemsList.ItemContainerGenerator.Status == GeneratorStatus.ContainersGenerated)
+                ApplyPortalView();
+        };
         Loaded += (_, _) => LoadFolderItems();
         Unloaded += (_, _) => StopFolderWatcher();
     }
@@ -153,9 +200,16 @@ public partial class FenceControl : System.Windows.Controls.UserControl
         SortModifiedMenuItem.Header = _loc.T("SortModified");
         SortCreatedMenuItem.Header = _loc.T("SortCreated");
         SortCategoryMenuItem.Header = _loc.T("SortCategory");
+        var chinese = string.Equals(_loc.Language, LocalizationService.Chinese, StringComparison.OrdinalIgnoreCase);
+        PortalViewMenuItem.Header = chinese ? "视图" : "View";
+        PortalIconsViewMenuItem.Header = chinese ? "图标" : "Icons";
+        PortalListViewMenuItem.Header = chinese ? "列表" : "List";
+        PortalBackButton.ToolTip = chinese ? "返回" : "Back";
+        PortalUpButton.ToolTip = chinese ? "上级" : "Up";
         StyleMenuItem.Header = _loc.T("Style");
-        CopyColorMenuItem.Header = _loc.T("CopyColor");
-        ChooseBackgroundColorMenuItem.Header = _loc.T("EditColor");
+        CopyStyleMenuItem.Header = _loc.T("CopyStyle");
+        PasteStyleMenuItem.Header = _loc.T("PasteStyle");
+        ChooseBackgroundColorMenuItem.Header = _loc.T("ChooseBackgroundColor");
         ChooseHeaderColorMenuItem.Header = _loc.T("ChooseHeaderColor");
         OpacityMenuItem.Header = _loc.T("Opacity");
         ResetStyleMenuItem.Header = _loc.T("ResetStyle");
@@ -171,8 +225,9 @@ public partial class FenceControl : System.Windows.Controls.UserControl
     }
 
     internal void SetTabStatus(int count, int index, IReadOnlyList<string>? titles = null, bool useTabStrip = false,
-        bool hoverSwitch = false, bool equalTabWidths = false)
+        bool hoverSwitch = false, bool equalTabWidths = false, IReadOnlyList<FenceConfig>? tabConfigs = null)
     {
+        _tabConfigs = tabConfigs;
         TabStatusText.Text = count > 1 ? $"{index + 1}/{count}" : string.Empty;
         TabNavigationPanel.Visibility = count > 1 && !useTabStrip ? Visibility.Visible : Visibility.Collapsed;
         TabStripPanel.Children.Clear();
@@ -206,14 +261,16 @@ public partial class FenceControl : System.Windows.Controls.UserControl
                 Text = titles != null && tabIndex < titles.Count ? titles[tabIndex] : $"Tab {tabIndex + 1}",
                 Foreground = new SolidColorBrush(tabIndex == index ? Colors.Black : Colors.White),
                 FontWeight = tabIndex == index ? FontWeights.SemiBold : FontWeights.Normal,
+                HorizontalAlignment = System.Windows.HorizontalAlignment.Stretch,
                 VerticalAlignment = VerticalAlignment.Center,
+                TextAlignment = TextAlignment.Center,
                 TextTrimming = TextTrimming.CharacterEllipsis
             };
             tab.MouseLeftButtonDown += (_, e) =>
             {
                 // A normal drag belongs to the whole Fence. Shift reserves the gesture
                 // for tab ordering/detaching, matching browser-style tab handling.
-                e.Handled = (Keyboard.Modifiers & ModifierKeys.Shift) != 0;
+                e.Handled = IsTabDetachGestureActive();
             };
             tab.MouseLeftButtonUp += (_, e) =>
             {
@@ -221,19 +278,46 @@ public partial class FenceControl : System.Windows.Controls.UserControl
             };
             tab.PreviewMouseMove += (_, e) =>
             {
-                if (e.LeftButton != MouseButtonState.Pressed || (Keyboard.Modifiers & ModifierKeys.Shift) == 0) return;
+                if (e.LeftButton != MouseButtonState.Pressed || !IsTabDetachGestureActive()) return;
                 var data = new System.Windows.DataObject("MiniFences.TabIndex", selectedIndex);
+                var sourceFenceId = _tabConfigs != null && selectedIndex < _tabConfigs.Count
+                    ? _tabConfigs[selectedIndex].Id
+                    : Config.Id;
+                data.SetData("MiniFences.TabFenceId", sourceFenceId);
+                var dragPreview = CreateTabDragPreview(selectedIndex);
+                var dragPreviewContext = new TabDragPreviewContext(dragPreview, (FenceControl)dragPreview.Content);
+                data.SetData("MiniFences.TabDragPreviewContext", dragPreviewContext);
+                var dropPoint = Forms.Cursor.Position;
+                System.Windows.GiveFeedbackEventHandler followPreview = (_, _) => PositionTabDragPreview(dragPreview);
+                var previewFollowTimer = new DispatcherTimer(DispatcherPriority.Send)
+                {
+                    Interval = TimeSpan.FromMilliseconds(16)
+                };
+                previewFollowTimer.Tick += (_, _) => PositionTabDragPreview(dragPreview);
                 System.Windows.DragDropEffects effect;
+                tab.Visibility = Visibility.Collapsed;
                 try
                 {
+                    tab.GiveFeedback += followPreview;
+                    PositionTabDragPreview(dragPreview);
+                    dragPreview.Show();
+                    PositionTabDragPreview(dragPreview);
+                    previewFollowTimer.Start();
+                    TabDragStarted?.Invoke(selectedIndex);
                     effect = System.Windows.DragDrop.DoDragDrop(tab, data, System.Windows.DragDropEffects.Move);
+                    dropPoint = Forms.Cursor.Position;
                 }
                 finally
                 {
+                    previewFollowTimer.Stop();
+                    tab.GiveFeedback -= followPreview;
+                    dragPreviewContext.SetMergePreview(false, 0);
+                    dragPreview.Close();
+                    tab.Visibility = Visibility.Visible;
                     Mouse.SetCursor(System.Windows.Input.Cursors.Arrow);
                 }
                 if (effect == System.Windows.DragDropEffects.None)
-                    TabDetachRequested?.Invoke(selectedIndex);
+                    TabDetachRequested?.Invoke(selectedIndex, dropPoint);
             };
             tab.GiveFeedback += (_, e) =>
             {
@@ -243,19 +327,46 @@ public partial class FenceControl : System.Windows.Controls.UserControl
             };
             tab.DragOver += (_, e) =>
             {
-                e.Effects = (Keyboard.Modifiers & ModifierKeys.Shift) != 0 && e.Data.GetDataPresent("MiniFences.TabIndex")
+                var sourceFenceId = e.Data.GetData("MiniFences.TabFenceId") as string;
+                var belongsToThisGroup = sourceFenceId != null && _tabConfigs?.Any(config =>
+                    string.Equals(config.Id, sourceFenceId, StringComparison.OrdinalIgnoreCase)) == true;
+                var inMergeZone = IsTabMergeDropPoint(e.GetPosition(this));
+                var canMergeOrReturn = sourceFenceId != null && inMergeZone &&
+                                       (belongsToThisGroup || CanAcceptTabMerge(sourceFenceId));
+                var canReorder = belongsToThisGroup &&
+                                 e.Data.GetData("MiniFences.TabIndex") is int fromIndex && fromIndex != selectedIndex;
+                e.Effects = IsTabDetachGestureActive() && (canMergeOrReturn || canReorder)
                     ? System.Windows.DragDropEffects.Move
                     : System.Windows.DragDropEffects.None;
+                if (e.Data.GetData("MiniFences.TabDragPreviewContext") is TabDragPreviewContext previewContext)
+                    previewContext.SetMergePreview(canMergeOrReturn, ActualWidth / 3);
                 e.Handled = true;
             };
             tab.Drop += (_, e) =>
             {
-                if ((Keyboard.Modifiers & ModifierKeys.Shift) != 0 &&
-                    e.Data.GetData("MiniFences.TabIndex") is int fromIndex && fromIndex != selectedIndex)
-                    TabReorderRequested?.Invoke(fromIndex, selectedIndex);
-                e.Effects = (Keyboard.Modifiers & ModifierKeys.Shift) != 0
-                    ? System.Windows.DragDropEffects.Move
-                    : System.Windows.DragDropEffects.None;
+                if (e.Data.GetData("MiniFences.TabDragPreviewContext") is TabDragPreviewContext previewContext)
+                    previewContext.SetMergePreview(false, 0);
+                var sourceFenceId = e.Data.GetData("MiniFences.TabFenceId") as string;
+                var belongsToThisGroup = sourceFenceId != null && _tabConfigs?.Any(config =>
+                    string.Equals(config.Id, sourceFenceId, StringComparison.OrdinalIgnoreCase)) == true;
+                if (IsTabDetachGestureActive() && sourceFenceId != null && !belongsToThisGroup &&
+                    CanAcceptTabMerge(sourceFenceId) && IsTabMergeDropPoint(e.GetPosition(this)))
+                {
+                    TabMergeRequested?.Invoke(sourceFenceId);
+                    e.Effects = System.Windows.DragDropEffects.Move;
+                }
+                else if (IsTabDetachGestureActive() && belongsToThisGroup &&
+                         e.Data.GetData("MiniFences.TabIndex") is int fromIndex &&
+                         (fromIndex != selectedIndex || IsTabMergeDropPoint(e.GetPosition(this))))
+                {
+                    if (fromIndex != selectedIndex) TabReorderRequested?.Invoke(fromIndex, selectedIndex);
+                    else TabSelectedRequested?.Invoke(fromIndex);
+                    e.Effects = System.Windows.DragDropEffects.Move;
+                }
+                else
+                {
+                    e.Effects = System.Windows.DragDropEffects.None;
+                }
                 e.Handled = true;
             };
             if (hoverSwitch) tab.MouseEnter += (_, _) => TabSelectedRequested?.Invoke(selectedIndex);
@@ -263,6 +374,154 @@ public partial class FenceControl : System.Windows.Controls.UserControl
             TabStripPanel.Children.Add(tab);
         }
     }
+
+    private bool IsTabDetachGestureActive() =>
+        AllowTabDetachWithoutShiftForTesting || (Keyboard.Modifiers & ModifierKeys.Shift) != 0;
+
+    internal void HideTabForActiveDrag(string fenceId)
+    {
+        if (_tabConfigs == null) return;
+        var hiddenIndex = _tabConfigs.ToList().FindIndex(config =>
+            string.Equals(config.Id, fenceId, StringComparison.OrdinalIgnoreCase));
+        if (hiddenIndex < 0) return;
+
+        foreach (UIElement child in TabStripPanel.Children)
+        {
+            if (Grid.GetColumn(child) == hiddenIndex) child.Visibility = Visibility.Collapsed;
+        }
+
+        if (hiddenIndex < TabStripPanel.ColumnDefinitions.Count)
+            TabStripPanel.ColumnDefinitions[hiddenIndex].Width = new GridLength(0);
+    }
+
+    private Window CreateTabDragPreview(int tabIndex)
+    {
+        var sourceConfig = _tabConfigs != null && tabIndex >= 0 && tabIndex < _tabConfigs.Count
+            ? _tabConfigs[tabIndex]
+            : Config;
+        var previewConfig = System.Text.Json.JsonSerializer.Deserialize<FenceConfig>(
+            System.Text.Json.JsonSerializer.Serialize(sourceConfig)) ?? sourceConfig;
+        previewConfig.TabGroupId = null;
+        previewConfig.Width = sourceConfig.PreTabWidth is > 0 ? sourceConfig.PreTabWidth.Value : ActualWidth;
+        previewConfig.Height = sourceConfig.PreTabHeight is > 0 ? sourceConfig.PreTabHeight.Value : ActualHeight;
+        previewConfig.IsCollapsed = false;
+        previewConfig.EdgeDock = null;
+
+        var previewFence = new FenceControl(previewConfig)
+        {
+            Width = Math.Max(180, previewConfig.Width),
+            Height = Math.Max(120, previewConfig.Height),
+            IsHitTestVisible = false,
+            Opacity = 0.9
+        };
+        previewFence.SetLocalization(_loc);
+        previewFence.SetTabStatus(1, 0);
+        previewFence.LoadFolderItems();
+
+        var preview = new Window
+        {
+            Width = previewFence.Width,
+            Height = previewFence.Height,
+            Content = previewFence,
+            WindowStyle = WindowStyle.None,
+            ResizeMode = ResizeMode.NoResize,
+            AllowsTransparency = true,
+            Background = System.Windows.Media.Brushes.Transparent,
+            ShowActivated = false,
+            ShowInTaskbar = false,
+            Topmost = true,
+            IsHitTestVisible = false,
+            SizeToContent = SizeToContent.Manual
+        };
+        preview.SourceInitialized += (_, _) =>
+        {
+            var handle = new System.Windows.Interop.WindowInteropHelper(preview).Handle;
+            var style = GetWindowLong(handle, GwlExStyle);
+            SetWindowLong(handle, GwlExStyle, style | WsExTransparent | WsExNoActivate | WsExToolWindow);
+        };
+        return preview;
+    }
+
+    private void PositionTabDragPreview(Window preview)
+    {
+        var handle = new System.Windows.Interop.WindowInteropHelper(preview).Handle;
+        if (handle == IntPtr.Zero) return;
+        var cursor = Forms.Cursor.Position;
+        var toDevice = PresentationSource.FromVisual(this)?.CompositionTarget?.TransformToDevice
+                       ?? System.Windows.Media.Matrix.Identity;
+        var widthPixels = Math.Max(1, (int)Math.Round(preview.Width * toDevice.M11));
+        var heightPixels = Math.Max(1, (int)Math.Round(preview.Height * toDevice.M22));
+        var workArea = Forms.Screen.FromPoint(cursor).WorkingArea;
+        var requestedLeft = cursor.X - widthPixels / 2;
+        var requestedTop = cursor.Y - Math.Max(1, (int)Math.Round(17 * toDevice.M22));
+        var left = Math.Clamp(requestedLeft, workArea.Left, Math.Max(workArea.Left, workArea.Right - widthPixels));
+        var top = Math.Clamp(requestedTop, workArea.Top, Math.Max(workArea.Top, workArea.Bottom - heightPixels));
+        SetWindowPos(
+            handle,
+            HwndTopmost,
+            left,
+            top,
+            0,
+            0,
+            SwpNoSize | SwpNoActivate | SwpNoOwnerZOrder);
+    }
+
+    private sealed class TabDragPreviewContext
+    {
+        private readonly Window _window;
+        private readonly FenceControl _fence;
+        private readonly double _fullWidth;
+        private readonly double _fullHeight;
+        private bool _isCompact;
+
+        public TabDragPreviewContext(Window window, FenceControl fence)
+        {
+            _window = window;
+            _fence = fence;
+            _fullWidth = window.Width;
+            _fullHeight = window.Height;
+        }
+
+        public void SetMergePreview(bool active, double compactWidth)
+        {
+            if (_isCompact == active) return;
+            _isCompact = active;
+            var targetWidth = active ? Math.Max(96, compactWidth) : _fullWidth;
+            var targetHeight = active ? CollapsedHeight : _fullHeight;
+            _fence.SetMergeSourcePreview(active, targetWidth);
+            _window.BeginAnimation(Window.WidthProperty, new System.Windows.Media.Animation.DoubleAnimation(
+                _window.ActualWidth > 0 ? _window.ActualWidth : _window.Width, targetWidth, TimeSpan.FromMilliseconds(180))
+            { FillBehavior = System.Windows.Media.Animation.FillBehavior.HoldEnd });
+            _window.BeginAnimation(Window.HeightProperty, new System.Windows.Media.Animation.DoubleAnimation(
+                _window.ActualHeight > 0 ? _window.ActualHeight : _window.Height, targetHeight, TimeSpan.FromMilliseconds(180))
+            { FillBehavior = System.Windows.Media.Animation.FillBehavior.HoldEnd });
+        }
+    }
+
+    private static readonly IntPtr HwndTopmost = new(-1);
+    private const uint SwpNoSize = 0x0001;
+    private const uint SwpNoActivate = 0x0010;
+    private const uint SwpNoOwnerZOrder = 0x0200;
+    private const int GwlExStyle = -20;
+    private const int WsExTransparent = 0x00000020;
+    private const int WsExToolWindow = 0x00000080;
+    private const int WsExNoActivate = 0x08000000;
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern bool SetWindowPos(
+        IntPtr hWnd,
+        IntPtr hWndInsertAfter,
+        int x,
+        int y,
+        int cx,
+        int cy,
+        uint flags);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern int GetWindowLong(IntPtr hWnd, int index);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern int SetWindowLong(IntPtr hWnd, int index, int newStyle);
 
     public void LoadFolderItems()
     {
@@ -279,6 +538,7 @@ public partial class FenceControl : System.Windows.Controls.UserControl
             StopFolderWatcher();
             _lastLoadError = null;
             ItemsList.ItemsSource = ApplySort(existingItems);
+            BeginAsyncIconLoad(ItemsList.ItemsSource.Cast<FolderItem>().ToArray());
             AppLogger.Log($"Loading desktop group '{Config.Title}' with {existingItems.Count} assigned item(s).");
             UpdateStatusText();
             if (!previousPaths.SequenceEqual(Config.AssignedPaths, StringComparer.OrdinalIgnoreCase)) Changed?.Invoke(this, EventArgs.Empty);
@@ -286,28 +546,33 @@ public partial class FenceControl : System.Windows.Controls.UserControl
         }
 
 
-        StatusText.Visibility = Config.ShowPath ? Visibility.Visible : Visibility.Collapsed;
+        StatusText.Visibility = Visibility.Collapsed;
+        PortalNavigationBar.Visibility = Visibility.Visible;
         ItemsList.Visibility = Visibility.Visible;
         ContentArea.IsHitTestVisible = true;
 
-        if (!System.IO.Directory.Exists(Config.FolderPath))
+        var portalPath = GetPortalPath();
+        if (!System.IO.Directory.Exists(portalPath))
         {
-            AutoOrganizerService.TryEnsureManagedCategoryFolder(Config.FolderPath, out _, out _);
+            Config.PortalCurrentPath = Config.FolderPath;
+            portalPath = Config.FolderPath;
+            AutoOrganizerService.TryEnsureManagedCategoryFolder(portalPath, out _, out _);
         }
 
-        if (!System.IO.Directory.Exists(Config.FolderPath))
+        if (!System.IO.Directory.Exists(portalPath))
         {
-            AppLogger.Log($"Fence folder missing: {Config.FolderPath}");
+            AppLogger.Log($"Fence folder missing: {portalPath}");
             StopFolderWatcher();
             ItemsList.ItemsSource = Array.Empty<FolderItem>();
-            _lastLoadError = $"Path does not exist: {Config.FolderPath}";
+            _lastLoadError = $"Path does not exist: {portalPath}";
             UpdateStatusText();
+            UpdatePortalNavigation();
             return;
         }
 
         EnsureFolderWatcher();
-        AppLogger.Log($"Loading Fence '{Config.Title}' from folder: {Config.FolderPath}");
-        if (!_folderItemService.TryLoadItems(Config.FolderPath, out var items, out var error))
+        AppLogger.Log($"Loading Fence '{Config.Title}' from folder: {portalPath}");
+        if (!_folderItemService.TryLoadItems(portalPath, out var items, out var error))
         {
             _lastLoadError = error;
             ItemsList.ItemsSource = Array.Empty<FolderItem>();
@@ -317,7 +582,178 @@ public partial class FenceControl : System.Windows.Controls.UserControl
 
         _lastLoadError = null;
         ItemsList.ItemsSource = ApplySort(items);
+        BeginAsyncIconLoad(ItemsList.ItemsSource.Cast<FolderItem>().ToArray());
+        ApplyPortalView();
+        UpdatePortalNavigation();
         UpdateStatusText();
+    }
+
+    private string GetPortalPath()
+    {
+        if (Config.IsDesktopGroup || string.IsNullOrWhiteSpace(Config.PortalCurrentPath)) return Config.FolderPath;
+        try
+        {
+            var root = Path.TrimEndingDirectorySeparator(Path.GetFullPath(Config.FolderPath));
+            var current = Path.TrimEndingDirectorySeparator(Path.GetFullPath(Config.PortalCurrentPath));
+            var relative = Path.GetRelativePath(root, current);
+            return relative != ".." &&
+                   !relative.StartsWith(".." + Path.DirectorySeparatorChar, StringComparison.Ordinal)
+                ? current
+                : root;
+        }
+        catch { return Config.FolderPath; }
+    }
+
+    private void NavigatePortal(string path, bool addToHistory)
+    {
+        if (Config.IsDesktopGroup || !Directory.Exists(path)) return;
+        var root = Path.TrimEndingDirectorySeparator(Path.GetFullPath(Config.FolderPath));
+        var target = Path.TrimEndingDirectorySeparator(Path.GetFullPath(path));
+        var relative = Path.GetRelativePath(root, target);
+        if (relative == ".." || relative.StartsWith(".." + Path.DirectorySeparatorChar, StringComparison.Ordinal)) return;
+        var current = GetPortalPath();
+        if (string.Equals(current, target, StringComparison.OrdinalIgnoreCase)) return;
+        if (addToHistory) _portalBackHistory.Push(current);
+        Config.PortalCurrentPath = target;
+        LoadFolderItems();
+        Changed?.Invoke(this, EventArgs.Empty);
+    }
+
+    private void PortalBackButton_Click(object sender, RoutedEventArgs e)
+    {
+        while (_portalBackHistory.Count > 0)
+        {
+            var path = _portalBackHistory.Pop();
+            if (!Directory.Exists(path)) continue;
+            NavigatePortal(path, false);
+            break;
+        }
+    }
+
+    private void PortalUpButton_Click(object sender, RoutedEventArgs e)
+    {
+        var root = Path.TrimEndingDirectorySeparator(Path.GetFullPath(Config.FolderPath));
+        var current = Path.TrimEndingDirectorySeparator(Path.GetFullPath(GetPortalPath()));
+        if (string.Equals(root, current, StringComparison.OrdinalIgnoreCase)) return;
+        var parent = Directory.GetParent(current)?.FullName;
+        if (!string.IsNullOrWhiteSpace(parent)) NavigatePortal(parent, true);
+    }
+
+    private void UpdatePortalNavigation()
+    {
+        if (Config.IsDesktopGroup) { PortalNavigationBar.Visibility = Visibility.Collapsed; return; }
+        var root = Path.TrimEndingDirectorySeparator(Path.GetFullPath(Config.FolderPath));
+        var current = Path.TrimEndingDirectorySeparator(Path.GetFullPath(GetPortalPath()));
+        var isAtRoot = string.Equals(root, current, StringComparison.OrdinalIgnoreCase);
+        PortalNavigationBar.Visibility = isAtRoot && _portalBackHistory.Count == 0
+            ? Visibility.Collapsed
+            : Visibility.Visible;
+        StatusText.Visibility = PortalNavigationBar.Visibility == Visibility.Collapsed
+            ? Visibility.Visible
+            : Visibility.Collapsed;
+        PortalBackButton.IsEnabled = _portalBackHistory.Count > 0;
+        PortalUpButton.IsEnabled = !isAtRoot;
+        PortalBreadcrumbPanel.Children.Clear();
+        AddBreadcrumb(Path.GetFileName(root) is { Length: > 0 } rootName ? rootName : root, root);
+        var relative = Path.GetRelativePath(root, current);
+        if (relative != ".")
+        {
+            var accumulated = root;
+            foreach (var segment in relative.Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar))
+            {
+                accumulated = Path.Combine(accumulated, segment);
+                PortalBreadcrumbPanel.Children.Add(new TextBlock
+                {
+                    Text = "›", Foreground = new SolidColorBrush(System.Windows.Media.Color.FromArgb(0x88, 0xFF, 0xFF, 0xFF)),
+                    VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(3, 0, 3, 0)
+                });
+                AddBreadcrumb(segment, accumulated);
+            }
+        }
+    }
+
+    private void AddBreadcrumb(string title, string path)
+    {
+        var button = new System.Windows.Controls.Button
+        {
+            Content = title, Tag = path, Padding = new Thickness(6, 2, 6, 2),
+            Background = System.Windows.Media.Brushes.Transparent, Foreground = System.Windows.Media.Brushes.White,
+            BorderThickness = new Thickness(0), MaxWidth = 130
+        };
+        button.Click += (_, _) => NavigatePortal((string)button.Tag, true);
+        PortalBreadcrumbPanel.Children.Add(button);
+    }
+
+    private void PortalViewMenuItem_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not MenuItem { Tag: string mode } || Config.IsDesktopGroup) return;
+        Config.PortalViewMode = mode;
+        ApplyPortalView();
+        Changed?.Invoke(this, EventArgs.Empty);
+    }
+
+    private void PortalIconSizeMenuItem_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not MenuItem { Tag: string value } || !double.TryParse(value, out var size) || Config.IsDesktopGroup) return;
+        Config.PortalIconSize = Math.Clamp(size, 24, 72);
+        ApplyPortalView();
+        Changed?.Invoke(this, EventArgs.Empty);
+    }
+
+    private void PortalSpacingMenuItem_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not MenuItem { Tag: string value } || !double.TryParse(value, out var spacing) || Config.IsDesktopGroup) return;
+        Config.PortalItemSpacing = Math.Clamp(spacing, 0, 16);
+        ApplyPortalView();
+        Changed?.Invoke(this, EventArgs.Empty);
+    }
+
+    private void ApplyPortalView()
+    {
+        if (Config.IsDesktopGroup) return;
+        var listMode = string.Equals(Config.PortalViewMode, "List", StringComparison.OrdinalIgnoreCase);
+        ItemsList.ItemTemplate = listMode
+            ? (DataTemplate)ItemsList.Resources["PortalListItemTemplate"]
+            : _iconItemTemplate;
+        PortalIconsViewMenuItem.IsChecked = !listMode;
+        PortalListViewMenuItem.IsChecked = listMode;
+        Dispatcher.BeginInvoke(() =>
+        {
+            if (FindVisualChild<Controls.VirtualizingWrapPanel>(ItemsList) is { } panel)
+            {
+                panel.ItemWidth = listMode ? Math.Max(120, ItemsList.ActualWidth - 8) : Config.PortalIconSize + 52;
+                panel.ItemHeight = listMode ? 66 : Config.PortalIconSize + 66;
+            }
+            for (var index = 0; index < ItemsList.Items.Count; index++)
+            {
+                if (ItemsList.ItemContainerGenerator.ContainerFromIndex(index) is not System.Windows.Controls.ListViewItem container) continue;
+                container.Width = listMode ? Math.Max(120, ItemsList.ActualWidth - 12) : Config.PortalIconSize + 44;
+                container.Height = listMode ? 58 : Config.PortalIconSize + 58;
+                container.Margin = new Thickness(Config.PortalItemSpacing);
+            }
+            foreach (var image in FindVisualChildren<System.Windows.Controls.Image>(ItemsList))
+                image.Width = image.Height = listMode ? 32 : Config.PortalIconSize;
+        }, DispatcherPriority.Loaded);
+    }
+
+    private void BeginAsyncIconLoad(IReadOnlyList<FolderItem> items)
+    {
+        _iconLoadCancellation?.Cancel();
+        _iconLoadCancellation?.Dispose();
+        _iconLoadCancellation = new CancellationTokenSource();
+        var token = _iconLoadCancellation.Token;
+        _ = _folderItemService.LoadIconsAsync(items, (item, icon) =>
+        {
+            if (icon is null || token.IsCancellationRequested) return;
+            Dispatcher.BeginInvoke(() =>
+            {
+                if (!token.IsCancellationRequested) item.Icon = icon;
+            }, DispatcherPriority.Background);
+        }, token).ContinueWith(task =>
+        {
+            if (task.Exception is not null && !token.IsCancellationRequested)
+                AppLogger.LogException("Asynchronous icon loading failed.", task.Exception.GetBaseException());
+        }, TaskScheduler.Default);
     }
 
     public void SyncConfigFromLayout()
@@ -448,7 +884,19 @@ public partial class FenceControl : System.Windows.Controls.UserControl
 
             _isDragging = true;
             TitleBar.Cursor = System.Windows.Input.Cursors.SizeAll;
-            if (_isHoverExpanded && Config.IsCollapsed)
+            _headerDragDockEdge = Config.EdgeDock;
+            if (Config.IsCollapsed && !string.IsNullOrWhiteSpace(_headerDragDockEdge))
+            {
+                Config.IsCollapsed = false;
+                _isHoverExpanded = false;
+                ApplyCollapsedState();
+                SyncConfigFromLayout();
+                _leftStart = Canvas.GetLeft(this);
+                _topStart = Canvas.GetTop(this);
+                _dragStart = current;
+                Changed?.Invoke(this, EventArgs.Empty);
+            }
+            else if (_isHoverExpanded && Config.IsCollapsed)
             {
                 Config.IsCollapsed = false;
                 Config.EdgeDock = null;
@@ -461,17 +909,77 @@ public partial class FenceControl : System.Windows.Controls.UserControl
 
         var left = _leftStart + current.X - _dragStart.X;
         var top = _topStart + current.Y - _dragStart.Y;
-        if (SnapToGrid)
+        if (SnapToGrid && SnapWhileDragging)
         {
-            left = Math.Round(left / 16) * 16;
-            top = Math.Round(top / 16) * 16;
+            var snapped = SnapPositionToGrid(new System.Windows.Point(left, top), GridSize);
+            left = snapped.X;
+            top = snapped.Y;
         }
-
-        Canvas.SetLeft(this, Math.Clamp(left, 0, Math.Max(0, canvas.ActualWidth - Width)));
-        Canvas.SetTop(this, Math.Clamp(top, 0, Math.Max(0, canvas.ActualHeight - Height)));
+        var dragArea = DragWorkAreaProvider?.Invoke(Forms.Cursor.Position) ??
+                       new Rect(0, 0, canvas.ActualWidth, canvas.ActualHeight);
+        var position = ClampHeaderDragPosition(
+            new System.Windows.Point(left, top),
+            dragArea,
+            new System.Windows.Size(Width, Height),
+            _isMergeCompactPreview
+                ? new Rect(_mergePreviewLeft, 0, _mergePreviewWidth, CollapsedHeight)
+                : null);
+        Canvas.SetLeft(this, position.X);
+        Canvas.SetTop(this, position.Y);
+        if (ShouldUndockDuringHeaderDrag(_headerDragDockEdge,
+                new Rect(position.X, position.Y, Width, Height), dragArea))
+        {
+            Config.EdgeDock = null;
+            _headerDragDockEdge = null;
+            ApplyCollapsedState();
+        }
         HeaderDragDeltaX = Canvas.GetLeft(this) - _leftStart;
         SyncConfigFromLayout();
         HeaderDragMoved?.Invoke(this, EventArgs.Empty);
+    }
+
+    internal static System.Windows.Point SnapPositionToGrid(System.Windows.Point position, int gridSize)
+    {
+        var size = Math.Max(1, gridSize);
+        return new System.Windows.Point(
+            Math.Round(position.X / size) * size,
+            Math.Round(position.Y / size) * size);
+    }
+
+    internal static System.Windows.Point ClampHeaderDragPosition(
+        System.Windows.Point requested,
+        System.Windows.Size canvas,
+        System.Windows.Size fenceSize,
+        System.Windows.Rect? visibleBounds = null)
+        => ClampHeaderDragPosition(requested, new Rect(0, 0, canvas.Width, canvas.Height), fenceSize, visibleBounds);
+
+    internal static System.Windows.Point ClampHeaderDragPosition(
+        System.Windows.Point requested,
+        System.Windows.Rect dragArea,
+        System.Windows.Size fenceSize,
+        System.Windows.Rect? visibleBounds = null)
+    {
+        var visible = visibleBounds ?? new Rect(0, 0, fenceSize.Width, fenceSize.Height);
+        var minimumLeft = dragArea.Left - visible.Left;
+        var maximumLeft = Math.Max(minimumLeft, dragArea.Right - visible.Right);
+        var minimumTop = dragArea.Top - visible.Top;
+        var maximumTop = Math.Max(minimumTop, dragArea.Bottom - visible.Bottom);
+        return new System.Windows.Point(
+            Math.Clamp(requested.X, minimumLeft, maximumLeft),
+            Math.Clamp(requested.Y, minimumTop, maximumTop));
+    }
+
+    internal static bool ShouldUndockDuringHeaderDrag(
+        string? dockEdge,
+        Rect fenceBounds,
+        Rect usableArea,
+        double threshold = 12)
+    {
+        if (string.Equals(dockEdge, "Top", StringComparison.OrdinalIgnoreCase))
+            return fenceBounds.Top > usableArea.Top + threshold;
+        if (string.Equals(dockEdge, "Bottom", StringComparison.OrdinalIgnoreCase))
+            return fenceBounds.Bottom < usableArea.Bottom - threshold;
+        return false;
     }
 
     private void TitleBar_MouseLeftButtonUp(object sender, MouseButtonEventArgs e)
@@ -492,8 +1000,16 @@ public partial class FenceControl : System.Windows.Controls.UserControl
         }
 
         _isDragging = false;
+        _headerDragDockEdge = null;
         TitleBar.Cursor = System.Windows.Input.Cursors.Arrow;
         TitleBar.ReleaseMouseCapture();
+        if (SnapToGrid)
+        {
+            var snapped = SnapPositionToGrid(
+                new System.Windows.Point(Canvas.GetLeft(this), Canvas.GetTop(this)), GridSize);
+            Canvas.SetLeft(this, snapped.X);
+            Canvas.SetTop(this, snapped.Y);
+        }
         SyncConfigFromLayout();
         Changed?.Invoke(this, EventArgs.Empty);
         HeaderDragCompleted?.Invoke(this, EventArgs.Empty);
@@ -507,6 +1023,7 @@ public partial class FenceControl : System.Windows.Controls.UserControl
         }
 
         _isDragging = false;
+        _headerDragDockEdge = null;
         TitleBar.Cursor = System.Windows.Input.Cursors.Arrow;
         _isTitlePressPending = false;
         SyncConfigFromLayout();
@@ -524,21 +1041,38 @@ public partial class FenceControl : System.Windows.Controls.UserControl
         var maxWidth = Parent is Canvas canvas && canvas.ActualWidth > 0
             ? Math.Max(MinWidth, canvas.ActualWidth - Canvas.GetLeft(this))
             : double.PositiveInfinity;
-        var maxHeight = Parent is Canvas canvas2 && canvas2.ActualHeight > 0
-            ? Math.Max(MinHeight, canvas2.ActualHeight - Canvas.GetTop(this))
-            : double.PositiveInfinity;
-
         Width = Math.Clamp(Width + e.HorizontalChange, MinWidth, maxWidth);
-        Height = Math.Clamp(Height + e.VerticalChange, MinHeight, maxHeight);
+        if (_resizeFromTop)
+        {
+            var minimumTop = Parent is Canvas ? 0 : double.NegativeInfinity;
+            var maxHeight = double.IsNegativeInfinity(minimumTop)
+                ? double.PositiveInfinity
+                : Math.Max(MinHeight, _resizeBottomAnchor - minimumTop);
+            Height = Math.Clamp(Height - e.VerticalChange, MinHeight, maxHeight);
+            Canvas.SetTop(this, _resizeBottomAnchor - Height);
+        }
+        else
+        {
+            var maxHeight = Parent is Canvas canvas2 && canvas2.ActualHeight > 0
+                ? Math.Max(MinHeight, canvas2.ActualHeight - Canvas.GetTop(this))
+                : double.PositiveInfinity;
+            Height = Math.Clamp(Height + e.VerticalChange, MinHeight, maxHeight);
+        }
         SyncConfigFromLayout();
         Changed?.Invoke(this, EventArgs.Empty);
     }
 
-    private void ResizeThumb_DragStarted(object sender, DragStartedEventArgs e) => _isResizing = true;
+    private void ResizeThumb_DragStarted(object sender, DragStartedEventArgs e)
+    {
+        _isResizing = true;
+        _resizeFromTop = ResizeThumb.VerticalAlignment == VerticalAlignment.Top;
+        _resizeBottomAnchor = Canvas.GetTop(this) + Height;
+    }
 
     private void ResizeThumb_DragCompleted(object sender, DragCompletedEventArgs e)
     {
         _isResizing = false;
+        _resizeFromTop = false;
         ResizeThumb.Visibility = IsMouseOver && !IsVisuallyCollapsed ? Visibility.Visible : Visibility.Collapsed;
     }
 
@@ -1287,13 +1821,17 @@ public partial class FenceControl : System.Windows.Controls.UserControl
             return;
         }
 
-        if (!_folderItemService.TryRenameItem(item, dialog.InputText, out var renamedPath, out var error))
+        var renameSucceeded = ActionHistory is null
+            ? _folderItemService.TryRenameItem(item, dialog.InputText, out var renamedPath, out var error)
+            : ActionHistory.ExecuteRename(_folderItemService, item, dialog.InputText, out renamedPath, out error);
+        if (!renameSucceeded)
         {
             System.Windows.MessageBox.Show(FormatFileOperationError(error, "CouldNotRenameItem"), "MiniFences", MessageBoxButton.OK, MessageBoxImage.Warning);
             return;
         }
 
-        if (ReplaceAssignedPathAfterRename(Config, item.FullPath, renamedPath))
+        var originalPath = item.FullPath;
+        if (ReplaceAssignedPathAfterRename(Config, originalPath, renamedPath))
         {
             Changed?.Invoke(this, EventArgs.Empty);
         }
@@ -1359,12 +1897,19 @@ public partial class FenceControl : System.Windows.Controls.UserControl
             return;
         }
 
-        var errors = new List<string>();
-        foreach (var item in items)
+        List<string> errors;
+        if (ActionHistory is not null)
         {
-            if (!_folderItemService.TryDeleteItem(item, out var error))
+            ActionHistory.ExecuteRecycleDeleteBatch(_folderItemService, items, out var failures);
+            errors = failures.ToList();
+        }
+        else
+        {
+            errors = [];
+            foreach (var item in items)
             {
-                errors.Add($"{item.Name}: {FormatFileOperationError(error, "CouldNotDeleteItem")}");
+                if (!_folderItemService.TryDeleteItem(item, out var error))
+                    errors.Add($"{item.Name}: {FormatFileOperationError(error, "CouldNotDeleteItem")}");
             }
         }
 
@@ -1460,7 +2005,7 @@ public partial class FenceControl : System.Windows.Controls.UserControl
             return;
         }
 
-        if (!_folderItemService.TryCreateFolder(Config.FolderPath, dialog.InputText, out _, out var error))
+        if (!_folderItemService.TryCreateFolder(GetPortalPath(), dialog.InputText, out _, out var error))
         {
             System.Windows.MessageBox.Show(FormatFileOperationError(error, "CouldNotCreateFolder"), "MiniFences", MessageBoxButton.OK, MessageBoxImage.Warning);
             return;
@@ -1486,16 +2031,26 @@ public partial class FenceControl : System.Windows.Controls.UserControl
             return;
         }
 
-        Config.FolderPath = dialog.SelectedPath;
-        Config.Kind = FenceConfig.FolderPortalKind;
-        Config.AssignedPaths.Clear();
-        if (string.Equals(Config.Title, "Desktop", StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(Config.Title, "Mini Fence", StringComparison.OrdinalIgnoreCase))
+        bool ApplyFolderChange()
         {
-            Config.Title = System.IO.Path.GetFileName(dialog.SelectedPath);
-            TitleText.Text = Config.Title;
+            Config.FolderPath = dialog.SelectedPath;
+            Config.PortalCurrentPath = dialog.SelectedPath;
+            _portalBackHistory.Clear();
+            Config.Kind = FenceConfig.FolderPortalKind;
+            Config.AssignedPaths.Clear();
+            if (string.Equals(Config.Title, "Desktop", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(Config.Title, "Mini Fence", StringComparison.OrdinalIgnoreCase))
+            {
+                Config.Title = System.IO.Path.GetFileName(dialog.SelectedPath);
+                TitleText.Text = Config.Title;
+            }
+            return true;
         }
 
+        if (ActionHistory is not null && ActionHistoryConfig is not null)
+            ActionHistory.ExecuteFenceChange($"更改 Fence“{Config.Title}”的文件夹", ActionHistoryConfig, Config, ApplyFolderChange);
+        else
+            ApplyFolderChange();
         LoadFolderItems();
         Changed?.Invoke(this, EventArgs.Empty);
     }
@@ -1590,7 +2145,7 @@ public partial class FenceControl : System.Windows.Controls.UserControl
 
     private void EnsureFolderWatcher()
     {
-        var normalizedPath = System.IO.Path.GetFullPath(Config.FolderPath);
+        var normalizedPath = System.IO.Path.GetFullPath(GetPortalPath());
         if (string.Equals(_watchedFolderPath, normalizedPath, StringComparison.OrdinalIgnoreCase))
         {
             return;
@@ -1679,30 +2234,36 @@ public partial class FenceControl : System.Windows.Controls.UserControl
         DeleteRequested?.Invoke(this, EventArgs.Empty);
     }
 
-    private void ChooseBackgroundColorMenuItem_Click(object sender, RoutedEventArgs e)
+    private void ChooseBackgroundColorMenuItem_PreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
     {
-        if (TryChooseColor(Config.BackgroundColor, out var color))
-        {
-            Config.BackgroundColor = color;
-            ApplyStyle();
-            Changed?.Invoke(this, EventArgs.Empty);
-        }
+        AppLogger.Log($"Background color menu pressed for '{Config.Title}'.");
+        e.Handled = true;
+        FenceContextMenu.IsOpen = false;
+        BeginChooseColor(chooseHeader: false);
     }
 
-    private void CopyColorMenuItem_Click(object sender, RoutedEventArgs e)
+    private void ChooseHeaderColorMenuItem_PreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
     {
-        try { System.Windows.Clipboard.SetText(Config.BackgroundColor); }
-        catch (Exception ex) { AppLogger.LogException("Could not copy Fence color", ex); }
+        AppLogger.Log($"Title color menu pressed for '{Config.Title}'.");
+        e.Handled = true;
+        FenceContextMenu.IsOpen = false;
+        BeginChooseColor(chooseHeader: true);
     }
 
-    private void ChooseHeaderColorMenuItem_Click(object sender, RoutedEventArgs e)
+    private void CopyStyleMenuItem_Click(object sender, RoutedEventArgs e)
     {
-        if (TryChooseColor(Config.HeaderColor, out var color))
-        {
-            Config.HeaderColor = color;
-            ApplyStyle();
-            Changed?.Invoke(this, EventArgs.Empty);
-        }
+        _copiedStyle = FenceAppearance.From(Config);
+        PasteStyleMenuItem.IsEnabled = true;
+        AppLogger.Log($"Fence style copied from '{Config.Title}'.");
+    }
+
+    private void PasteStyleMenuItem_Click(object sender, RoutedEventArgs e)
+    {
+        if (_copiedStyle is not { } style) return;
+        style.ApplyTo(Config);
+        ApplyStyle();
+        Changed?.Invoke(this, EventArgs.Empty);
+        AppLogger.Log($"Fence style pasted to '{Config.Title}'.");
     }
 
     private void OpacityMenuItem_Click(object sender, RoutedEventArgs e)
@@ -1723,6 +2284,7 @@ public partial class FenceControl : System.Windows.Controls.UserControl
 
     private void FenceContextMenu_Opened(object sender, RoutedEventArgs e)
     {
+        PasteStyleMenuItem.IsEnabled = _copiedStyle != null;
         UnstackTabMenuItem.Visibility = string.IsNullOrWhiteSpace(Config.TabGroupId)
             ? Visibility.Collapsed
             : Visibility.Visible;
@@ -1732,6 +2294,19 @@ public partial class FenceControl : System.Windows.Controls.UserControl
         foreach (var item in OpacityMenuItem.Items.OfType<MenuItem>())
             item.IsChecked = int.TryParse(item.Tag?.ToString(), out var value) && value == opacity;
     }
+
+    private void FenceControl_ContextMenuOpening(object sender, ContextMenuEventArgs e)
+    {
+        var bottomDocked = UsesBottomTitleLayout();
+        FenceContextMenu.PlacementTarget = bottomDocked ? TitleBar : null;
+        FenceContextMenu.Placement = GetFenceContextMenuPlacement(Config.EdgeDock, bottomDocked);
+        FenceContextMenu.VerticalOffset = bottomDocked ? -4 : 0;
+    }
+
+    internal static PlacementMode GetFenceContextMenuPlacement(string? dockEdge, bool bottomTitleLayout = true) =>
+        string.Equals(dockEdge, "Bottom", StringComparison.OrdinalIgnoreCase) && bottomTitleLayout
+            ? PlacementMode.Top
+            : PlacementMode.MousePoint;
 
     private IReadOnlyList<FolderItem> ApplySort(IEnumerable<FolderItem> items)
     {
@@ -1758,22 +2333,60 @@ public partial class FenceControl : System.Windows.Controls.UserControl
 
     private void FenceControl_DragEnter(object sender, System.Windows.DragEventArgs e)
     {
+        if (e.Data.GetData("MiniFences.TabFenceId") is string sourceFenceId)
+        {
+            UpdateTabMergeDragState(e, sourceFenceId);
+            return;
+        }
         UpdateDragState(e);
     }
 
     private void FenceControl_DragOver(object sender, System.Windows.DragEventArgs e)
     {
+        if (e.Data.GetData("MiniFences.TabFenceId") is string sourceFenceId)
+        {
+            UpdateTabMergeDragState(e, sourceFenceId);
+            return;
+        }
         UpdateDragState(e);
     }
 
     private void FenceControl_DragLeave(object sender, System.Windows.DragEventArgs e)
     {
+        if (e.Data.GetData("MiniFences.TabDragPreviewContext") is TabDragPreviewContext previewContext)
+            previewContext.SetMergePreview(false, 0);
         ClearDragHighlight();
     }
 
     private void FenceControl_Drop(object sender, System.Windows.DragEventArgs e)
     {
+        if (e.Data.GetData("MiniFences.TabDragPreviewContext") is TabDragPreviewContext previewContext)
+            previewContext.SetMergePreview(false, 0);
         ClearDragHighlight();
+        if (e.Data.GetData("MiniFences.TabFenceId") is string sourceFenceId)
+        {
+            var inMergeZone = IsTabMergeDropPoint(e.GetPosition(this));
+            if (CanAcceptTabMerge(sourceFenceId) && inMergeZone)
+            {
+                AppLogger.Log($"Tab title-zone drop accepted. Source={sourceFenceId}; Target={Config.Title}");
+                TabMergeRequested?.Invoke(sourceFenceId);
+                e.Effects = System.Windows.DragDropEffects.Move;
+            }
+            else if (BelongsToThisTabGroup(sourceFenceId) && inMergeZone)
+            {
+                var sourceIndex = _tabConfigs?.ToList().FindIndex(config =>
+                    string.Equals(config.Id, sourceFenceId, StringComparison.OrdinalIgnoreCase)) ?? -1;
+                if (sourceIndex >= 0) TabSelectedRequested?.Invoke(sourceIndex);
+                AppLogger.Log($"Tab returned to its original group. Source={sourceFenceId}; Target={Config.Title}");
+                e.Effects = System.Windows.DragDropEffects.Move;
+            }
+            else
+            {
+                e.Effects = System.Windows.DragDropEffects.None;
+            }
+            e.Handled = true;
+            return;
+        }
         if (!TryGetDroppedFiles(e, out var paths))
         {
             AppLogger.Log($"Fence drop ignored because item path data was unavailable: {Config.Title}");
@@ -1789,7 +2402,10 @@ public partial class FenceControl : System.Windows.Controls.UserControl
             if (pathsToRestore.Length > 0)
             {
                 var desktopRoot = Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory);
-                restoreResult = _folderItemService.MoveIntoFolder(pathsToRestore, desktopRoot);
+                restoreResult = ActionHistory is null
+                    ? _folderItemService.MoveIntoFolder(pathsToRestore, desktopRoot)
+                    : ActionHistory.ExecuteFileMove("将文件移回桌面",
+                        () => _folderItemService.MoveIntoFolder(pathsToRestore, desktopRoot));
                 if (restoreResult.Errors.Count > 0 || restoreResult.Skipped > 0)
                 {
                     System.Windows.MessageBox.Show(BuildMoveSummary(restoreResult), "MiniFences", MessageBoxButton.OK,
@@ -1824,7 +2440,10 @@ public partial class FenceControl : System.Windows.Controls.UserControl
             return;
         }
 
-        var result = _folderItemService.MoveIntoFolder(paths, Config.FolderPath);
+        var result = ActionHistory is null
+            ? _folderItemService.MoveIntoFolder(paths, GetPortalPath())
+            : ActionHistory.ExecuteFileMove($"移动到 Fence“{Config.Title}”",
+                () => _folderItemService.MoveIntoFolder(paths, GetPortalPath()));
         if (result.Errors.Count > 0)
         {
             var message = BuildMoveSummary(result);
@@ -1960,6 +2579,43 @@ public partial class FenceControl : System.Windows.Controls.UserControl
         return DesktopDragData.TryGetPaths(e.Data, out paths);
     }
 
+    private void UpdateTabMergeDragState(System.Windows.DragEventArgs e, string sourceFenceId)
+    {
+        var canMergeOrReturn = IsTabMergeDropPoint(e.GetPosition(this)) &&
+                               (CanAcceptTabMerge(sourceFenceId) || BelongsToThisTabGroup(sourceFenceId));
+        e.Effects = canMergeOrReturn ? System.Windows.DragDropEffects.Move : System.Windows.DragDropEffects.None;
+        e.Handled = true;
+        if (e.Data.GetData("MiniFences.TabDragPreviewContext") is TabDragPreviewContext previewContext)
+            previewContext.SetMergePreview(canMergeOrReturn, ActualWidth / 3);
+        if (canMergeOrReturn)
+        {
+            OuterBorder.BorderBrush = System.Windows.Media.Brushes.DeepSkyBlue;
+            OuterBorder.BorderThickness = new Thickness(2);
+        }
+        else
+        {
+            ClearDragHighlight();
+        }
+    }
+
+    private bool CanAcceptTabMerge(string sourceFenceId) =>
+        CanAcceptTabMerge(sourceFenceId, Config.Id, _tabConfigs);
+
+    private bool BelongsToThisTabGroup(string sourceFenceId) =>
+        _tabConfigs?.Any(config => string.Equals(config.Id, sourceFenceId, StringComparison.OrdinalIgnoreCase)) == true;
+
+    internal static bool CanAcceptTabMerge(string sourceFenceId, string targetFenceId, IReadOnlyList<FenceConfig>? targetTabs) =>
+        !string.Equals(targetFenceId, sourceFenceId, StringComparison.OrdinalIgnoreCase) &&
+        (targetTabs == null || !targetTabs.Any(config =>
+            string.Equals(config.Id, sourceFenceId, StringComparison.OrdinalIgnoreCase)));
+
+    private bool IsTabMergeDropPoint(System.Windows.Point point) =>
+        IsTabMergeDropPoint(point, ActualWidth > 0 ? ActualWidth : Width);
+
+    internal static bool IsTabMergeDropPoint(System.Windows.Point point, double fenceWidth) =>
+        fenceWidth > 0 && point.Y >= 0 && point.Y <= CollapsedHeight &&
+        point.X >= fenceWidth / 3 && point.X <= fenceWidth * 2 / 3;
+
     private void ClearDragHighlight()
     {
         OuterBorder.BorderBrush = new SolidColorBrush(System.Windows.Media.Color.FromArgb(0x88, 0xFF, 0xFF, 0xFF));
@@ -1975,7 +2631,7 @@ public partial class FenceControl : System.Windows.Controls.UserControl
         ItemsList.Background = Config.UseCleanStyle
             ? System.Windows.Media.Brushes.Transparent
             : BrushFromString("#16FFFFFF", "#16FFFFFF");
-        TitleBar.Background = BrushFromString(Config.HeaderColor, "#CC3F7FA8");
+        TitleBar.Background = FenceAppearanceBrush.CreateHeaderBrush(Config);
         TitleBar.BorderBrush = Config.UseCleanStyle
             ? new SolidColorBrush(System.Windows.Media.Color.FromArgb(0x55, 0xFF, 0xFF, 0xFF))
             : System.Windows.Media.Brushes.Transparent;
@@ -2018,12 +2674,14 @@ public partial class FenceControl : System.Windows.Controls.UserControl
 
     private void FenceControl_MouseEnter(object sender, System.Windows.Input.MouseEventArgs e)
     {
+        ScrollViewer.SetVerticalScrollBarVisibility(ItemsList, ScrollBarVisibility.Auto);
         if (!IsVisuallyCollapsed && !Config.IsLocked) ResizeThumb.Visibility = Visibility.Visible;
         SetHoverExpanded(true);
     }
 
     private void FenceControl_MouseLeave(object sender, System.Windows.Input.MouseEventArgs e)
     {
+        ScrollViewer.SetVerticalScrollBarVisibility(ItemsList, ScrollBarVisibility.Hidden);
         if (!_isResizing) ResizeThumb.Visibility = Visibility.Collapsed;
         SetHoverExpanded(false);
     }
@@ -2050,6 +2708,8 @@ public partial class FenceControl : System.Windows.Controls.UserControl
     private void ApplyCollapsedState()
     {
         var isVisuallyCollapsed = Config.IsCollapsed && !_isHoverExpanded;
+        var bottomDocked = ShouldUseBottomTitleLayout(
+            Config.EdgeDock, isVisuallyCollapsed, BottomDockTitleAtBottom, TopDockTitleAtBottomOnExpand);
         MinHeight = isVisuallyCollapsed ? CollapsedHeight : ExpandedMinHeight;
         ContentArea.Visibility = isVisuallyCollapsed ? Visibility.Collapsed : Visibility.Visible;
         var showFooter = !isVisuallyCollapsed && !Config.UseCleanStyle;
@@ -2057,21 +2717,28 @@ public partial class FenceControl : System.Windows.Controls.UserControl
         ResizeThumb.Visibility = !isVisuallyCollapsed && !Config.IsLocked && (IsMouseOver || _isResizing)
             ? Visibility.Visible
             : Visibility.Collapsed;
-        ContentRow.Height = isVisuallyCollapsed ? new GridLength(0) : new GridLength(1, GridUnitType.Star);
-        FooterRow.Height = showFooter ? new GridLength(22) : new GridLength(0);
+        ResizeThumb.VerticalAlignment = bottomDocked ? VerticalAlignment.Top : VerticalAlignment.Bottom;
+        ResizeThumb.Margin = bottomDocked ? new Thickness(0, 4, 4, 0) : new Thickness(0, 0, 4, 4);
+        ResizeThumb.Tag = bottomDocked ? "Top" : "Bottom";
+        ResizeThumb.Cursor = bottomDocked ? System.Windows.Input.Cursors.SizeNESW : System.Windows.Input.Cursors.SizeNWSE;
+        ApplyDockedVisualOrder(bottomDocked, isVisuallyCollapsed, showFooter);
         Height = isVisuallyCollapsed
             ? CollapsedHeight
             : Math.Max(ExpandedMinHeight, Config.ExpandedHeight ?? Config.Height);
         if (Parent is Canvas canvas && canvas.ActualHeight > 0)
         {
-            if (string.Equals(Config.EdgeDock, "Top", StringComparison.OrdinalIgnoreCase))
-                Canvas.SetTop(this, 0);
-            else if (string.Equals(Config.EdgeDock, "Bottom", StringComparison.OrdinalIgnoreCase))
-                Canvas.SetTop(this, Math.Max(0, canvas.ActualHeight - Height));
+            var dockArea = GetDockWorkArea(canvas);
+            if (!string.IsNullOrWhiteSpace(Config.EdgeDock))
+                Canvas.SetTop(this, GetDockedFenceTop(Config.EdgeDock, Height, dockArea));
         }
         TitleBar.CornerRadius = isVisuallyCollapsed
             ? new CornerRadius(8)
-            : new CornerRadius(8, 8, 0, 0);
+            : bottomDocked
+                ? new CornerRadius(0, 0, 8, 8)
+                : new CornerRadius(8, 8, 0, 0);
+        ContentBackground.CornerRadius = bottomDocked
+            ? new CornerRadius(8, 8, 0, 0)
+            : new CornerRadius(0, 0, 8, 8);
 
         // A Canvas does not always immediately remeasure a child after only its
         // row definitions change. Settle the visual tree before a later drag can
@@ -2079,6 +2746,76 @@ public partial class FenceControl : System.Windows.Controls.UserControl
         InvalidateMeasure();
         InvalidateArrange();
         UpdateLayout();
+    }
+
+    private bool UsesBottomTitleLayout() => ShouldUseBottomTitleLayout(
+        Config.EdgeDock, IsVisuallyCollapsed, BottomDockTitleAtBottom, TopDockTitleAtBottomOnExpand);
+
+    internal static bool ShouldUseBottomTitleLayout(
+        string? dockEdge,
+        bool isVisuallyCollapsed,
+        bool bottomDockTitleAtBottom,
+        bool topDockTitleAtBottomOnExpand)
+    {
+        if (string.Equals(dockEdge, "Bottom", StringComparison.OrdinalIgnoreCase))
+            return bottomDockTitleAtBottom;
+        return string.Equals(dockEdge, "Top", StringComparison.OrdinalIgnoreCase) &&
+               !isVisuallyCollapsed &&
+               topDockTitleAtBottomOnExpand;
+    }
+
+    private Rect GetDockWorkArea(Canvas canvas)
+    {
+        var fallback = new Rect(0, 0, canvas.ActualWidth, canvas.ActualHeight);
+        if (DragWorkAreaProvider == null) return fallback;
+
+        try
+        {
+            var left = Canvas.GetLeft(this);
+            var top = Canvas.GetTop(this);
+            if (double.IsNaN(left)) left = Config.Left;
+            if (double.IsNaN(top)) top = Config.Top;
+            var screenPoint = canvas.PointToScreen(new System.Windows.Point(left + Width / 2, top + CollapsedHeight / 2));
+            return DragWorkAreaProvider(new System.Drawing.Point(
+                (int)Math.Round(screenPoint.X),
+                (int)Math.Round(screenPoint.Y)));
+        }
+        catch
+        {
+            return DragWorkAreaProvider(Forms.Cursor.Position);
+        }
+    }
+
+    internal static double GetDockedFenceTop(string? dockEdge, double fenceHeight, Rect usableArea)
+    {
+        if (string.Equals(dockEdge, "Bottom", StringComparison.OrdinalIgnoreCase))
+            return Math.Max(usableArea.Top, usableArea.Bottom - fenceHeight);
+        return usableArea.Top;
+    }
+
+    private void ApplyDockedVisualOrder(bool bottomDocked, bool collapsed, bool showFooter)
+    {
+        if (bottomDocked)
+        {
+            FirstRow.Height = collapsed ? new GridLength(0) : new GridLength(1, GridUnitType.Star);
+            ContentRow.Height = showFooter ? new GridLength(22) : new GridLength(0);
+            FooterRow.Height = new GridLength(CollapsedHeight);
+            Grid.SetRow(ContentBackground, 0);
+            Grid.SetRowSpan(ContentBackground, 2);
+            Grid.SetRow(ContentArea, 0);
+            Grid.SetRow(FooterPanel, 1);
+            Grid.SetRow(TitleBar, 2);
+            return;
+        }
+
+        FirstRow.Height = new GridLength(CollapsedHeight);
+        ContentRow.Height = collapsed ? new GridLength(0) : new GridLength(1, GridUnitType.Star);
+        FooterRow.Height = showFooter ? new GridLength(22) : new GridLength(0);
+        Grid.SetRow(ContentBackground, 1);
+        Grid.SetRowSpan(ContentBackground, 2);
+        Grid.SetRow(ContentArea, 1);
+        Grid.SetRow(FooterPanel, 2);
+        Grid.SetRow(TitleBar, 0);
     }
 
     internal void RefreshAppearance()
@@ -2118,6 +2855,8 @@ public partial class FenceControl : System.Windows.Controls.UserControl
             OuterBorder.Margin = new Thickness(0);
             OuterBorder.HorizontalAlignment = System.Windows.HorizontalAlignment.Stretch;
             OuterBorder.VerticalAlignment = System.Windows.VerticalAlignment.Stretch;
+            _mergePreviewLeft = 0;
+            _mergePreviewWidth = 0;
             _isMergeCompactPreview = false;
             return;
         }
@@ -2130,6 +2869,8 @@ public partial class FenceControl : System.Windows.Controls.UserControl
         OuterBorder.VerticalAlignment = System.Windows.VerticalAlignment.Top;
         var targetWidth = Math.Max(96, compactWidth);
         var previewLeft = Math.Clamp(_titlePointerOffset.X - targetWidth / 2, 0, Math.Max(0, ActualWidth - targetWidth));
+        _mergePreviewLeft = previewLeft;
+        _mergePreviewWidth = targetWidth;
         OuterBorder.Margin = new Thickness(previewLeft, 0, 0, 0);
         OuterBorder.BeginAnimation(WidthProperty, new System.Windows.Media.Animation.DoubleAnimation(
             originalWidth, targetWidth, TimeSpan.FromMilliseconds(180))
@@ -2151,6 +2892,11 @@ public partial class FenceControl : System.Windows.Controls.UserControl
 
     private void OpenItem(FolderItem item)
     {
+        if (!Config.IsDesktopGroup && Directory.Exists(item.FullPath))
+        {
+            NavigatePortal(item.FullPath, true);
+            return;
+        }
         if (!_folderItemService.TryOpen(item, out var error))
         {
             System.Windows.MessageBox.Show(FormatFileOperationError(error, "CouldNotOpenItem"), "MiniFences", MessageBoxButton.OK, MessageBoxImage.Warning);
@@ -2242,9 +2988,10 @@ public partial class FenceControl : System.Windows.Controls.UserControl
 
     private void UpdateStatusText()
     {
-        if (!System.IO.Directory.Exists(Config.FolderPath))
+        var path = GetPortalPath();
+        if (!System.IO.Directory.Exists(path))
         {
-            StatusText.Text = $"{_loc.T("FolderNotFound")}: {Config.FolderPath}";
+            StatusText.Text = $"{_loc.T("FolderNotFound")}: {path}";
             return;
         }
 
@@ -2254,7 +3001,7 @@ public partial class FenceControl : System.Windows.Controls.UserControl
             return;
         }
 
-        StatusText.Text = $"{Config.FolderPath} - {ItemsList.Items.Count} {_loc.T("ItemCount")}";
+        StatusText.Text = $"{path} - {ItemsList.Items.Count} {_loc.T("ItemCount")}";
     }
 
     private static bool TryGetMenuItemContext(object sender, out FolderItem? item)
@@ -2308,6 +3055,16 @@ public partial class FenceControl : System.Windows.Controls.UserControl
         return null;
     }
 
+    private static IEnumerable<T> FindVisualChildren<T>(DependencyObject parent) where T : DependencyObject
+    {
+        for (var index = 0; index < VisualTreeHelper.GetChildrenCount(parent); index++)
+        {
+            var child = VisualTreeHelper.GetChild(parent, index);
+            if (child is T match) yield return match;
+            foreach (var descendant in FindVisualChildren<T>(child)) yield return descendant;
+        }
+    }
+
     private System.Windows.Controls.ListViewItem? FindItemContainerAtPoint(System.Windows.Point point)
     {
         for (var index = 0; index < ItemsList.Items.Count; index += 1)
@@ -2358,31 +3115,65 @@ public partial class FenceControl : System.Windows.Controls.UserControl
         }
     }
 
-    private static bool TryChooseColor(string currentColor, out string selectedColor)
+    private void BeginChooseColor(bool chooseHeader)
     {
-        using var dialog = new Forms.ColorDialog
-        {
-            FullOpen = true
-        };
+        var currentColor = chooseHeader ? Config.HeaderColor : Config.BackgroundColor;
+        AppLogger.Log($"Opening {(chooseHeader ? "title" : "background")} color picker for '{Config.Title}'.");
 
-        try
+        // The desktop host deliberately uses WS_EX_NOACTIVATE. Wait until the
+        // context menu has closed, then show our own activating WPF dialog.
+        Dispatcher.BeginInvoke(() =>
         {
-            var color = (System.Windows.Media.Color)System.Windows.Media.ColorConverter.ConvertFromString(currentColor);
-            dialog.Color = System.Drawing.Color.FromArgb(color.A, color.R, color.G, color.B);
-        }
-        catch
-        {
-            dialog.Color = System.Drawing.Color.FromArgb(0xDD, 0x20, 0x24, 0x2A);
-        }
+            try
+            {
+                var dialog = new ColorPickerDialog(currentColor, _loc, chooseHeader);
+                if (dialog.ShowDialog() != true) return;
+                var color = dialog.SelectedColor;
+                if (chooseHeader) Config.HeaderColor = color;
+                else Config.BackgroundColor = color;
+                ApplyStyle();
+                Changed?.Invoke(this, EventArgs.Empty);
+                AppLogger.Log($"Changed {(chooseHeader ? "title" : "background")} color for '{Config.Title}' to {color}.");
+            }
+            catch (Exception ex)
+            {
+                AppLogger.LogException("Could not open the Fence color picker", ex);
+                System.Windows.MessageBox.Show(
+                    _loc.Language == LocalizationService.Chinese
+                        ? $"无法打开颜色选择窗口：{ex.Message}"
+                        : $"Could not open the color picker: {ex.Message}",
+                    "MiniFences",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Warning);
+            }
+        }, DispatcherPriority.ApplicationIdle);
+    }
 
-        if (dialog.ShowDialog() != Forms.DialogResult.OK)
-        {
-            selectedColor = currentColor;
-            return false;
-        }
+    private sealed record FenceAppearance(
+        string BackgroundColor,
+        string HeaderColor,
+        double Opacity,
+        string TitleAlignment,
+        bool ShowPath,
+        bool UseCleanStyle)
+    {
+        internal static FenceAppearance From(FenceConfig config) => new(
+            config.BackgroundColor,
+            config.HeaderColor,
+            config.Opacity,
+            config.TitleAlignment,
+            config.ShowPath,
+            config.UseCleanStyle);
 
-        selectedColor = $"#{dialog.Color.A:X2}{dialog.Color.R:X2}{dialog.Color.G:X2}{dialog.Color.B:X2}";
-        return true;
+        internal void ApplyTo(FenceConfig config)
+        {
+            config.BackgroundColor = BackgroundColor;
+            config.HeaderColor = HeaderColor;
+            config.Opacity = Opacity;
+            config.TitleAlignment = TitleAlignment;
+            config.ShowPath = ShowPath;
+            config.UseCleanStyle = UseCleanStyle;
+        }
     }
 }
 

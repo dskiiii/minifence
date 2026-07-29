@@ -8,16 +8,18 @@ public sealed class DesktopIconLayoutService
 {
     public bool IsVisible()
     {
-        var listView = FindDesktopListView();
-        return listView != IntPtr.Zero && IsWindowVisible(listView);
+        return FindDesktopListViews().Any(IsWindowVisible);
     }
 
     public bool SetVisible(bool visible)
     {
-        var listView = FindDesktopListView();
-        if (listView == IntPtr.Zero) return false;
-        ShowWindow(listView, visible ? SwShowNoActivate : SwHide);
-        return IsWindowVisible(listView) == visible;
+        var listViews = FindDesktopListViews();
+        if (listViews.Count == 0) return false;
+        foreach (var listView in listViews)
+            ShowWindow(listView, visible ? SwShow : SwHide);
+        return visible
+            ? listViews.Any(IsWindowVisible)
+            : listViews.All(listView => !IsWindowVisible(listView));
     }
 
     public bool TryGetScreenPositions(out IReadOnlyList<DesktopIconPosition> positions, out string? error)
@@ -171,15 +173,20 @@ public sealed class DesktopIconLayoutService
 
     private static IntPtr FindDesktopListView()
     {
+        return FindDesktopListViews().FirstOrDefault();
+    }
+
+    private static IReadOnlyList<IntPtr> FindDesktopListViews()
+    {
+        var results = new HashSet<IntPtr>();
         var programManager = FindWindow("Progman", null);
         var programView = FindWindowEx(programManager, IntPtr.Zero, "SHELLDLL_DefView", null);
         if (programView != IntPtr.Zero)
         {
             var programList = FindWindowEx(programView, IntPtr.Zero, "SysListView32", "FolderView");
-            if (programList != IntPtr.Zero) return programList;
+            if (programList != IntPtr.Zero) results.Add(programList);
         }
 
-        var result = IntPtr.Zero;
         EnumWindows((window, _) =>
         {
             var className = new System.Text.StringBuilder(64);
@@ -187,10 +194,11 @@ public sealed class DesktopIconLayoutService
             if (!string.Equals(className.ToString(), "WorkerW", StringComparison.Ordinal)) return true;
             var view = FindWindowEx(window, IntPtr.Zero, "SHELLDLL_DefView", null);
             if (view == IntPtr.Zero) return true;
-            result = FindWindowEx(view, IntPtr.Zero, "SysListView32", "FolderView");
-            return result == IntPtr.Zero;
+            var listView = FindWindowEx(view, IntPtr.Zero, "SysListView32", "FolderView");
+            if (listView != IntPtr.Zero) results.Add(listView);
+            return true;
         }, IntPtr.Zero);
-        return result;
+        return results.ToArray();
     }
 
     [StructLayout(LayoutKind.Sequential)]
@@ -224,7 +232,7 @@ public sealed class DesktopIconLayoutService
     [DllImport("kernel32.dll", SetLastError = true)] private static extern bool WriteProcessMemory(IntPtr process, IntPtr address, IntPtr buffer, nuint size, out nuint written);
     [DllImport("kernel32.dll", SetLastError = true)] private static extern bool ReadProcessMemory(IntPtr process, IntPtr address, byte[] buffer, nuint size, out nuint read);
     [DllImport("kernel32.dll")] private static extern bool CloseHandle(IntPtr handle);
-    private const int SwHide = 0, SwShowNoActivate = 4;
+    private const int SwHide = 0, SwShow = 5;
 }
 
 public sealed record DesktopIconPosition(string Name, System.Windows.Point ScreenPosition);

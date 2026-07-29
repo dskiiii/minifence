@@ -197,6 +197,8 @@ public sealed class ConfigService
         return Normalize(current);
     }
 
+    public LayoutDocument CaptureLayout(AppConfig config) => CreateLayout(config);
+
     private string GetNamedLayoutPath(string name) => Path.Combine(NamedLayoutDirectory, $"{NormalizeLayoutName(name)}.json");
 
     private IReadOnlyList<LayoutEntry> GetLayoutEntries(string directory, string pattern, bool named)
@@ -290,7 +292,11 @@ public sealed class ConfigService
         IsCollapsed = fence.IsCollapsed,
         EnableHoverExpand = fence.EnableHoverExpand,
         EdgeDock = fence.EdgeDock,
-        TabGroupId = fence.TabGroupId
+        TabGroupId = fence.TabGroupId,
+        PortalCurrentPath = fence.PortalCurrentPath,
+        PortalViewMode = fence.PortalViewMode,
+        PortalIconSize = fence.PortalIconSize,
+        PortalItemSpacing = fence.PortalItemSpacing
     };
 
     private static void CopyAppearance(FenceConfig source, FenceConfig target)
@@ -487,6 +493,13 @@ public sealed class ConfigService
         var maxFencePage = Math.Max(0, config.Fences.Max(fence => fence.PageIndex));
         config.PageCount = Math.Max(1, Math.Max(config.PageCount, Math.Max(maxFencePage, config.CurrentPage) + 1));
         config.CurrentPage = Math.Clamp(config.CurrentPage, 0, config.PageCount - 1);
+        config.GridSize = Math.Clamp(config.GridSize <= 0 ? 16 : config.GridSize, 1, 256);
+        config.DirectPageHotkeys ??= [];
+        config.DirectPageHotkeys = Enumerable.Range(0, 12)
+            .Select(index => index < config.DirectPageHotkeys.Count
+                ? config.DirectPageHotkeys[index]?.Trim() ?? ""
+                : $"F{index + 1}")
+            .ToList();
         config.Language = LocalizationService.NormalizeLanguage(config.Language);
         config.PreviousPageHotkey = string.IsNullOrWhiteSpace(config.PreviousPageHotkey) ? "Ctrl+Alt+Left" : config.PreviousPageHotkey;
         config.NextPageHotkey = string.IsNullOrWhiteSpace(config.NextPageHotkey) ? "Ctrl+Alt+Right" : config.NextPageHotkey;
@@ -561,6 +574,9 @@ public sealed class ConfigService
             : Math.Max(180, config.ExpandedHeight ?? config.Height);
         config.BackgroundColor = string.IsNullOrWhiteSpace(config.BackgroundColor) ? DefaultBackgroundColor : config.BackgroundColor;
         config.HeaderColor = string.IsNullOrWhiteSpace(config.HeaderColor) ? DefaultHeaderColor : config.HeaderColor;
+        config.HeaderGradientColor = string.IsNullOrWhiteSpace(config.HeaderGradientColor)
+            ? DefaultHeaderGradientColor
+            : config.HeaderGradientColor;
         config.Opacity = double.IsNaN(config.Opacity) || double.IsInfinity(config.Opacity)
             ? 1.0
             : Math.Clamp(config.Opacity, 0.0, 1.0);
@@ -575,6 +591,7 @@ public sealed class ConfigService
 
     private const string DefaultBackgroundColor = "#DD20242A";
     private const string DefaultHeaderColor = "#CC3F7FA8";
+    private const string DefaultHeaderGradientColor = "#CC8E5BB7";
     private const double DefaultWorkspaceWidth = 1280;
     private const double DefaultWorkspaceHeight = 720;
     private const double DefaultStarterFenceWidth = 240;

@@ -20,16 +20,29 @@ try
     TestDesktopDoubleClickTracker();
     TestDesktopDragData();
     TestSettingsNavigation();
+    TestColorPickerDialog();
     TestTabMergeRules();
+    TestTabDropAcceptance();
+    TestTabGroupPresentationState();
+    TestHeaderDragEdgeTracking();
+    TestCustomGridAndPageHotkeys();
+    TestTaskbarWorkAreaClamp();
+    Assert(MainWindow.GetFenceLayoutHeight(new FenceConfig { Height = 600, IsCollapsed = true }) == 34,
+        "Startup layout clamping must use the visible title height for a collapsed Fence.");
     TestFenceLayout();
     TestPageDeletion(root);
     TestFolderItemLoadingAndMove(root);
+    TestShellIconLoading(root);
     TestShellOpenRequests(root);
     TestShellContextMenuPathSelection(root);
     TestShellContextMenuHostCommands();
     TestFenceControlBindingAndLayout(root);
     TestMetadataOrganizer(root);
     TestMultiRootMetadataOrganizer(root);
+    TestActionHistory(root);
+    TestDisplayLayouts(root);
+    TestLargeFolderVirtualization(root);
+    TestAdvancedAutoOrganizeRules(root);
     Console.WriteLine("MiniFences smoke tests passed.");
     return 0;
 }
@@ -51,6 +64,287 @@ finally
     {
         // Temporary cleanup failure should not hide the real test result.
     }
+}
+
+static void TestShellIconLoading(string root)
+{
+    var area = Path.Combine(root, "shell-icon");
+    Directory.CreateDirectory(area);
+    var archive = Path.Combine(area, "archive.zip");
+    File.WriteAllBytes(archive, []);
+    var service = new FolderItemService();
+    var item = service.LoadAssignedItems([archive]).Single();
+    System.Windows.Media.ImageSource? loadedIcon = null;
+    service.LoadIconsAsync([item], (_, icon) => loadedIcon = icon, CancellationToken.None)
+        .GetAwaiter().GetResult();
+    Assert(loadedIcon is System.Windows.Media.Imaging.BitmapSource,
+        "Shell file-association icons must load as a real bitmap on the STA icon worker.");
+}
+
+static void TestActionHistory(string root)
+{
+    var area = Path.Combine(root, "action-history");
+    Directory.CreateDirectory(area);
+    var historyPath = Path.Combine(area, "history", "actions.json");
+    var configService = new ConfigService(Path.Combine(area, "config.json"));
+    var service = new ActionHistoryService(historyPath);
+    var file = Path.Combine(area, "desktop-item.txt");
+    File.WriteAllText(file, "safe");
+    var fence = new FenceConfig
+    {
+        Id = "history-fence",
+        Title = "History",
+        Kind = FenceConfig.DesktopGroupKind,
+        AssignedPaths = [file],
+        Left = 123,
+        Top = 234,
+        HeaderColor = "#FF123456",
+        TabGroupId = "tabs"
+    };
+    var config = new AppConfig { PageCount = 2, Fences = [fence] };
+    service.RecordFenceDeleted(fence, 0);
+    config.Fences.Clear();
+    var undo = service.Undo(service.GetNextUndo()!.Id, config, configService);
+    Assert(undo.Succeeded && config.Fences.Count == 1 &&
+           config.Fences[0].AssignedPaths.SequenceEqual([file]) &&
+           config.Fences[0].Left == 123 && config.Fences[0].TabGroupId == "tabs",
+        "Fence delete undo must restore appearance, layout, tab membership and item assignments without moving files.");
+    Assert(File.Exists(file), "Fence delete and undo must not move or delete the real file.");
+
+    var secondFence = new FenceConfig
+    {
+        Id = "history-second",
+        Title = "Second",
+        Kind = FenceConfig.DesktopGroupKind,
+        AssignedPaths = []
+    };
+    config.Fences.Add(secondFence);
+    var membershipsBefore = service.CaptureMemberships(config);
+    config.Fences[0].AssignedPaths.Clear();
+    secondFence.AssignedPaths.Add(file);
+    service.RecordMembershipChange("assign", membershipsBefore, config);
+    undo = service.Undo(service.GetNextUndo()!.Id, config, configService);
+    Assert(undo.Succeeded && config.Fences[0].AssignedPaths.SequenceEqual([file]) &&
+           secondFence.AssignedPaths.Count == 0,
+        "Desktop assignment undo must restore original Fence ownership and order without duplicates.");
+
+    var changedFence = config.Fences[0];
+    Assert(service.ExecuteFenceChange("change folder", config, changedFence, () =>
+    {
+        changedFence.Kind = FenceConfig.FolderPortalKind;
+        changedFence.FolderPath = area;
+        changedFence.AssignedPaths.Clear();
+        return true;
+    }), "Fence type changes must enter the unified action history.");
+    undo = service.Undo(service.GetNextUndo()!.Id, config, configService);
+    Assert(undo.Succeeded && config.Fences[0].IsDesktopGroup &&
+           config.Fences[0].AssignedPaths.SequenceEqual([file]) &&
+           config.Fences[0].HeaderColor == "#FF123456",
+        "Undoing a Folder Portal conversion must restore the complete Fence and its desktop assignments.");
+
+    var source = Path.Combine(area, "source.txt");
+    var destination = Path.Combine(area, "destination.txt");
+    File.WriteAllText(destination, "moved");
+    service.RecordFileMove("move", [(source, destination)]);
+    undo = service.Undo(service.GetNextUndo()!.Id, config, configService);
+    Assert(undo.Succeeded && File.Exists(source) && !File.Exists(destination),
+        "File move undo must restore the original path.");
+
+    var conflictSource = Path.Combine(area, "conflict.txt");
+    var conflictDestination = Path.Combine(area, "conflict-moved.txt");
+    File.WriteAllText(conflictSource, "existing");
+    File.WriteAllText(conflictDestination, "moved");
+    service.RecordFileMove("conflict", [(conflictSource, conflictDestination)]);
+    undo = service.Undo(service.GetNextUndo()!.Id, config, configService);
+    Assert(!undo.Succeeded && File.ReadAllText(conflictSource) == "existing" &&
+           File.ReadAllText(conflictDestination) == "moved",
+        "Undo conflicts must never overwrite either file.");
+
+    service.Clear();
+    for (var i = 0; i < 60; i++)
+        service.Record(new ActionTransaction { DisplayName = $"item-{i}", ActionType = "Membership" });
+    Assert(service.GetTransactions().Count == 50, "Action history must retain at most 50 transactions.");
+
+    var oldDocument = new ActionJournalDocument
+    {
+        Transactions =
+        [
+            new ActionTransaction { DisplayName = "expired", CreatedAtUtc = DateTime.UtcNow.AddDays(-31) },
+            new ActionTransaction { DisplayName = "recent", CreatedAtUtc = DateTime.UtcNow }
+        ]
+    };
+    File.WriteAllText(historyPath, JsonSerializer.Serialize(oldDocument));
+    var pruned = new ActionHistoryService(historyPath);
+    Assert(pruned.GetTransactions().Count == 1 && pruned.GetTransactions()[0].DisplayName == "recent",
+        "Action history must remove entries older than 30 days during startup, not only after a new action.");
+
+    File.WriteAllText(historyPath, "{broken");
+    var recovered = new ActionHistoryService(historyPath);
+    Assert(recovered.GetTransactions().Count == 0 && File.Exists(historyPath) &&
+           Directory.EnumerateFiles(Path.GetDirectoryName(historyPath)!, "*.corrupt").Any(),
+        "Corrupt action history must be isolated and must not block startup.");
+    recovered.RecordRecycleDelete([file]);
+    Assert(recovered.GetNextUndo() is null, "Recycle Bin history must be visible but not offer unreliable automatic restore.");
+    recovered.Clear();
+    Assert(File.Exists(file), "Clearing operation history must not alter files or the current layout.");
+}
+
+static void TestDisplayLayouts(string root)
+{
+    var service = new DisplayLayoutService(Path.Combine(root, "display-layouts.json"));
+    var topologyA = DisplayLayoutService.CreateTopologyKey(
+    [
+        new DisplayDescriptor("DISPLAY1", 0, 0, 1920, 1080, 96, 96, true),
+        new DisplayDescriptor("DISPLAY2", 1920, 0, 2560, 1440, 144, 144, false)
+    ]);
+    var topologyB = DisplayLayoutService.CreateTopologyKey(
+    [
+        new DisplayDescriptor("DISPLAY1", 0, 0, 1920, 1080, 96, 96, true)
+    ]);
+    Assert(topologyA != topologyB, "Display topology key must include monitor combination, bounds and DPI.");
+    var config = new AppConfig
+    {
+        Fences =
+        [
+            new FenceConfig { Id = "display-fence", Left = 2400, Top = 300, Width = 400, Height = 420, PageIndex = 1 }
+        ]
+    };
+    service.SaveProfile(topologyA, config, 4480, 1440);
+    config.Fences[0].Left = 20;
+    config.Fences[0].Top = 20;
+    Assert(service.TryRestoreProfile(topologyA, config, 4480, 1440) &&
+           config.Fences[0].Left == 2400 && config.Fences[0].PageIndex == 1,
+        "Returning to a known monitor topology must restore its exact Fence layout.");
+    config.Fences[0].IsCollapsed = true;
+    config.Fences[0].Top = 1400;
+    service.SaveProfile(topologyA, config, 4480, 1440);
+    config.Fences[0].Top = 0;
+    Assert(service.TryRestoreProfile(topologyA, config, 4480, 1440) &&
+           Math.Abs(config.Fences[0].Top - 1400) < 0.01,
+        "A collapsed Fence layout must be restored using its visible title height, not its expanded height.");
+    config.Fences[0].IsCollapsed = false;
+    DisplayLayoutService.RemapToWorkspace(config, 4480, 1440, 1920, 1080);
+    Assert(config.Fences[0].Left >= 0 && config.Fences[0].Left + config.Fences[0].Width <= 1920 &&
+           config.Fences[0].Top >= 0 && config.Fences[0].Top + config.Fences[0].Height <= 1080,
+        "Unknown monitor topology fallback must keep every Fence visible.");
+    config.Fences[0].Left = 100;
+    config.Fences[0].Top = 100;
+    var cycled = DisplayLayoutService.CycleMonitorContents(config,
+    [
+        new System.Windows.Rect(0, 0, 1920, 1080),
+        new System.Windows.Rect(1920, 0, 2560, 1440)
+    ]);
+    Assert(cycled == 1 && config.Fences[0].Left >= 1920,
+        "Swap monitor contents must preserve relative placement while cycling Fences to the next monitor.");
+}
+
+static void TestLargeFolderVirtualization(string root)
+{
+    var folder = Path.Combine(root, "large-folder");
+    Directory.CreateDirectory(folder);
+    for (var index = 0; index < 600; index++)
+        File.WriteAllText(Path.Combine(folder, $"item-{index:0000}.txt"), "x");
+
+    Exception? failure = null;
+    var thread = new Thread(() =>
+    {
+        System.Windows.Window? window = null;
+        FenceControl? fence = null;
+        try
+        {
+            fence = new FenceControl(new FenceConfig
+            {
+                Id = "large-folder",
+                Title = "Large folder",
+                FolderPath = folder,
+                Width = 380,
+                Height = 320
+            });
+            window = new System.Windows.Window { Width = 400, Height = 350, Content = fence, ShowInTaskbar = false };
+            window.Show();
+            fence.LoadFolderItems();
+            window.UpdateLayout();
+            Assert(fence.LoadedItemsForTesting.Count == 600, "Large Folder Portal must load every item.");
+            Assert(fence.RealizedItemCountForTesting > 0 && fence.RealizedItemCountForTesting < 80,
+                "Large Folder Portal must virtualize off-screen item containers.");
+        }
+        catch (Exception ex) { failure = ex; }
+        finally
+        {
+            fence?.StopForTesting();
+            window?.Close();
+        }
+    });
+    thread.SetApartmentState(ApartmentState.STA);
+    thread.Start();
+    thread.Join();
+    if (failure is not null) throw new InvalidOperationException("Large-folder virtualization test failed.", failure);
+}
+
+static void TestAdvancedAutoOrganizeRules(string root)
+{
+    Assert(DesktopIntegrationService.BuildCommand(@"C:\Program Files\MiniFences\MiniFences.exe") ==
+           "\"C:\\Program Files\\MiniFences\\MiniFences.exe\" --new-fence",
+        "Windows desktop context-menu command must quote executable paths and request a new Fence.");
+    var folder = Path.Combine(root, "advanced-rules");
+    Directory.CreateDirectory(folder);
+    var exact = Path.Combine(folder, "Budget.xlsx");
+    File.WriteAllText(exact, "budget");
+    Assert(AutoOrganizerService.RuleMatches(new AutoOrganizeRule { ExactNames = "README; Budget.xlsx" }, exact),
+        "Auto-organize rules must support exact file names.");
+    Assert(!AutoOrganizerService.RuleMatches(new AutoOrganizeRule { ExactNames = "Other.xlsx" }, exact),
+        "Exact-name rules must reject other files.");
+    var shortcut = Path.Combine(folder, "Company.url");
+    File.WriteAllText(shortcut, "[InternetShortcut]\nURL=https://company.example/dashboard\n");
+    Assert(AutoOrganizerService.RuleMatches(
+            new AutoOrganizeRule { ShortcutTargetPattern = "https://company.example/*" }, shortcut),
+        "Auto-organize rules must match Internet shortcut targets.");
+}
+
+static void TestColorPickerDialog()
+{
+    var red = ColorPickerDialog.ColorFromHsvForTesting(0, 1, 1);
+    var cyan = ColorPickerDialog.ColorFromHsvForTesting(180, 1, 1);
+    Assert(red.R == 255 && red.G == 0 && red.B == 0 &&
+           cyan.R == 0 && cyan.G == 255 && cyan.B == 255,
+        "Continuous HSV picking must cover primary and secondary colors accurately.");
+    var sourceColor = System.Windows.Media.Color.FromArgb(204, 63, 127, 168);
+    var hsv = ColorPickerDialog.HsvFromColorForTesting(sourceColor);
+    var roundTrip = ColorPickerDialog.ColorFromHsvForTesting(hsv.Hue, hsv.Saturation, hsv.Value, sourceColor.A);
+    Assert(Math.Abs(roundTrip.R - sourceColor.R) <= 1 &&
+           Math.Abs(roundTrip.G - sourceColor.G) <= 1 &&
+           Math.Abs(roundTrip.B - sourceColor.B) <= 1 &&
+           roundTrip.A == sourceColor.A,
+        "HSV conversion must preserve the selected Fence color and opacity.");
+
+    Exception? failure = null;
+    var thread = new Thread(() =>
+    {
+        try
+        {
+            var localization = new LocalizationService { Language = LocalizationService.Chinese };
+            foreach (var chooseHeader in new[] { false, true })
+            {
+                var becameVisible = false;
+                var dialog = new ColorPickerDialog(chooseHeader ? "#CC3F7FA8" : "#DD20242A", localization, chooseHeader);
+                dialog.Loaded += (_, _) =>
+                {
+                    becameVisible = dialog.IsVisible;
+                    dialog.Dispatcher.BeginInvoke(dialog.Close, DispatcherPriority.ApplicationIdle);
+                };
+                dialog.ShowDialog();
+                Assert(becameVisible, $"The {(chooseHeader ? "title" : "background")} color picker must become visible.");
+            }
+        }
+        catch (Exception ex)
+        {
+            failure = ex;
+        }
+    });
+    thread.SetApartmentState(ApartmentState.STA);
+    thread.Start();
+    thread.Join();
+    if (failure != null) throw new InvalidOperationException("Color picker window test failed.", failure);
 }
 
 static void TestShellContextMenuPathSelection(string root)
@@ -122,6 +416,14 @@ static void TestSettingsNavigation()
         "Every Settings navigation entry should resolve to its own panel.");
     Assert(SettingsWindow.ResolvePanelName("Personalization") == null,
         "The removed combined Personalization page must not remain addressable.");
+    Assert(SettingsWindow.GetBottomRollupOptionAvailability(true, false, true, true) ==
+           (false, false, false),
+        "Bottom roll-up options must all be disabled when automatic edge roll-up is off.");
+    Assert(SettingsWindow.GetBottomRollupOptionAvailability(true, true, false, true) ==
+           (true, true, true) &&
+           SettingsWindow.GetBottomRollupOptionAvailability(true, true, true, false) ==
+           (true, true, true),
+        "All three bottom-edge options must remain parallel whenever automatic edge roll-up is enabled.");
 }
 
 static void TestDesktopDragData()
@@ -156,6 +458,16 @@ static void TestDesktopDragData()
 
 static void TestDefaultConfig(string root)
 {
+    Assert(MainWindow.ShouldShowFence(false, true, true),
+        "Desktop Fences must remain visible while MiniFences intentionally hides Explorer icons.");
+    Assert(MainWindow.ShouldShowFence(false, false, false),
+        "Folder Portal Fences must remain visible when desktop icon integration is disabled.");
+    Assert(!MainWindow.ShouldShowFence(false, false, true) &&
+           !MainWindow.ShouldShowLooseDesktopIcons(false, false),
+        "Desktop groups and MiniFences loose icons must defer to Explorer when integration is disabled.");
+    Assert(!MainWindow.ShouldShowFence(true, true, false),
+        "The explicit hide-Fences state must hide every Fence.");
+
     var commonDesktop = Environment.GetFolderPath(Environment.SpecialFolder.CommonDesktopDirectory);
     if (Directory.Exists(commonDesktop))
     {
@@ -181,10 +493,16 @@ static void TestDefaultConfig(string root)
     Assert(File.Exists(looseFile), "Default config should not move existing desktop files.");
     Assert(config.Fences.Select(fence => fence.Id).Distinct(StringComparer.OrdinalIgnoreCase).Count() == config.Fences.Count, "Default Fences should have unique ids.");
     Assert(config.EnableSnapToGrid, "Grid snapping should be on by default.");
+    Assert(config.GridSize == 16 && !config.SnapWhileDragging,
+        "The default grid should be 16 pixels and snap only when the drag finishes.");
+    Assert(config.DirectPageHotkeys.SequenceEqual(Enumerable.Range(1, 12).Select(index => $"F{index}")),
+        "Direct page shortcuts should default to F1 through F12.");
     Assert(config.EnableTabCreation, "Tab creation should be enabled by default.");
     Assert(config.TabViewMode == "Compact", "The compact tab view should remain the default for compatibility.");
     Assert(!config.ConfirmTabCreation && !config.HoverSwitchTabs, "Confirmation and hover switching should be opt-in.");
     Assert(config.EnableRollup && config.DoubleClickTitleRollup, "Roll-up and title double-click should remain enabled by default.");
+    Assert(config.AllowBottomEdgeRollup && config.BottomDockTitleAtBottom && !config.TopDockTitleAtBottomOnExpand,
+        "Bottom docking should keep its title at the bottom by default, while the mirrored top-dock layout remains optional.");
     Assert(!config.AutoRollupAtScreenEdge && !config.ClickTitleToExpand && !config.HoverTitleToExpand,
         "Automatic edge roll-up and alternate expansion gestures should be opt-in.");
     Assert(config.Fences.All(fence => !fence.EnableHoverExpand), "Hover expansion should be off by default.");
@@ -202,6 +520,72 @@ static void TestDefaultConfig(string root)
     var starterCategories = AutoOrganizerService.GetStarterCategories().ToHashSet(StringComparer.OrdinalIgnoreCase);
     Assert(AutoOrganizerService.GetOrganizerCategories().All(starterCategories.Contains), "Every organizer category should have a starter Fence.");
 
+}
+
+static void TestTabDropAcceptance()
+{
+    var ownTab = new FenceConfig { Id = "source" };
+    Assert(!FenceControl.CanAcceptTabMerge("source", "source", null),
+        "A tab dropped on its own standalone Fence must detach instead of being falsely accepted.");
+    Assert(!FenceControl.CanAcceptTabMerge("source", "target", [ownTab]),
+        "A tab dropped over its current tab group body must detach instead of snapping back.");
+    Assert(FenceControl.CanAcceptTabMerge("source", "target", [new FenceConfig { Id = "other" }]),
+        "A tab dropped over a different Fence must be eligible for merging.");
+    Assert(FenceControl.IsTabMergeDropPoint(new System.Windows.Point(150, 17), 450),
+        "The middle third of the target title bar must accept a tab merge.");
+    Assert(!FenceControl.IsTabMergeDropPoint(new System.Windows.Point(150, 100), 450),
+        "The target Fence content area must detach the tab instead of merging it.");
+    Assert(!FenceControl.IsTabMergeDropPoint(new System.Windows.Point(30, 17), 450),
+        "The sides of the target title bar must not count as the merge zone.");
+    Assert(MainWindow.GetTabDragRemainderIndex(0, 0, 3) == 1 &&
+           MainWindow.GetTabDragRemainderIndex(2, 2, 3) == 1,
+        "Dragging the active tab must immediately reveal a remaining tab in the original group.");
+    Assert(MainWindow.GetTabDragRemainderIndex(1, 0, 3) == 1,
+        "Dragging an inactive tab must keep the original group's active content unchanged.");
+    Assert(MainWindow.GetTabDragRemainderIndex(0, 0, 1) == -1,
+        "A standalone Fence cannot expose a remaining tab while dragging.");
+}
+
+static void TestTabGroupPresentationState()
+{
+    var activeTab = new FenceConfig
+    {
+        Left = 120,
+        Top = 80,
+        Width = 420,
+        Height = 360,
+        ExpandedHeight = 360,
+        IsCollapsed = true,
+        EdgeDock = "Top"
+    };
+    var otherTab = new FenceConfig
+    {
+        Left = 10,
+        Top = 20,
+        Width = 240,
+        Height = 200,
+        ExpandedHeight = 200,
+        IsCollapsed = false
+    };
+
+    MainWindow.SynchronizeTabGroupPresentationState(activeTab, [activeTab, otherTab]);
+    Assert(otherTab.IsCollapsed &&
+           otherTab.EdgeDock == "Top" &&
+           otherTab.ExpandedHeight == 360 &&
+           otherTab.Left == 120 &&
+           otherTab.Top == 80 &&
+           otherTab.Width == 420 &&
+           otherTab.Height == 360,
+        "Every tab in a group must share the active tab's roll-up and layout state.");
+
+    activeTab.IsCollapsed = false;
+    activeTab.EdgeDock = null;
+    activeTab.ExpandedHeight = 400;
+    MainWindow.SynchronizeTabGroupPresentationState(activeTab, [activeTab, otherTab]);
+    Assert(!otherTab.IsCollapsed &&
+           otherTab.EdgeDock == null &&
+           otherTab.ExpandedHeight == 400,
+        "Expanding one tab must expand the complete tab group.");
 }
 
 static void TestTabMergeRules()
@@ -229,11 +613,119 @@ static void TestTabMergeRules()
         Fences =
         [
             new FenceConfig { Id = "removed", TabGroupId = null },
-            new FenceConfig { Id = "remaining", TabGroupId = "group" }
+            new FenceConfig { Id = "remaining", TabGroupId = "group", Width = 500, Height = 500, PreTabWidth = 320, PreTabHeight = 280 }
         ]
     };
     Assert(MainWindow.DissolveSingleItemTabGroup(config, "group"), "A one-item tab group should be dissolved.");
     Assert(config.Fences[1].TabGroupId == null, "The remaining Fence should no longer expose tab-group actions.");
+    Assert(config.Fences[1].Width == 320 && config.Fences[1].Height == 280,
+        "A Fence leaving a tab group should regain its pre-merge size.");
+
+    var firstTab = new FenceConfig { Id = "tab-a", TabGroupId = "shared-tabs", PageIndex = 0 };
+    var secondTab = new FenceConfig { Id = "tab-b", TabGroupId = "shared-tabs", PageIndex = 0 };
+    var independent = new FenceConfig { Id = "single", PageIndex = 0 };
+    var pageConfig = new AppConfig { Fences = [firstTab, secondTab, independent] };
+    var groupMoveTargets = MainWindow.GetFencePageMoveTargets(pageConfig, firstTab);
+    Assert(groupMoveTargets.Count == 2 &&
+           groupMoveTargets.Contains(firstTab) &&
+           groupMoveTargets.Contains(secondTab) &&
+           !groupMoveTargets.Contains(independent),
+        "Changing the page of a merged Fence must move the complete tab group without turning page changes into tab switches.");
+    Assert(MainWindow.GetFencePageMoveTargets(pageConfig, independent).SequenceEqual([independent]),
+        "Changing the page of an independent Fence must affect only that Fence.");
+    Assert(MainWindow.GetDirectPageIndex(0x70) == 0 &&
+           MainWindow.GetDirectPageIndex(0x71) == 1 &&
+           MainWindow.GetDirectPageIndex(0x7B) == 11 &&
+           MainWindow.GetDirectPageIndex(0x6F) == -1,
+        "F1-F12 must map directly to pages 1-12 and reject unrelated keys.");
+}
+
+static void TestCustomGridAndPageHotkeys()
+{
+    var snapped = FenceControl.SnapPositionToGrid(new System.Windows.Point(23, 27), 10);
+    Assert(snapped.X == 20 && snapped.Y == 30,
+        "A custom grid size must control Fence position snapping.");
+    Assert(MainWindow.ParseHotkeyKey("F1") == 0x70 &&
+           MainWindow.ParseHotkeyKey("F12") == 0x7B &&
+           MainWindow.ParseHotkeyKey("F13") == 0,
+        "Custom direct-page shortcuts must parse F1 through F12 and reject unsupported function keys.");
+}
+
+static void TestHeaderDragEdgeTracking()
+{
+    var position = FenceControl.ClampHeaderDragPosition(
+        new System.Windows.Point(900, 100),
+        new System.Windows.Size(1000, 700),
+        new System.Windows.Size(360, 300));
+    Assert(position.X == 640 && position.Y == 100,
+        "An ordinary Fence must remain completely inside the desktop while it is dragged.");
+
+    var compactPosition = FenceControl.ClampHeaderDragPosition(
+        new System.Windows.Point(900, 100),
+        new System.Windows.Size(1000, 700),
+        new System.Windows.Size(360, 300),
+        new System.Windows.Rect(60, 0, 180, 34));
+    Assert(compactPosition.X == 760 && compactPosition.Y == 100,
+        "A compact merge preview should move until its visible title reaches the edge, not until its hidden full width does.");
+
+    var taskbarSafePosition = FenceControl.ClampHeaderDragPosition(
+        new System.Windows.Point(900, 700),
+        new System.Windows.Rect(0, 0, 1000, 660),
+        new System.Windows.Size(360, 300));
+    Assert(taskbarSafePosition.X == 640 && taskbarSafePosition.Y == 360,
+        "Dragging must keep the Fence footer above the taskbar work-area boundary.");
+
+    var taskbarSafeCompactPosition = FenceControl.ClampHeaderDragPosition(
+        new System.Windows.Point(900, 700),
+        new System.Windows.Rect(0, 0, 1000, 660),
+        new System.Windows.Size(360, 300),
+        new System.Windows.Rect(60, 0, 180, 34));
+    Assert(taskbarSafeCompactPosition.X == 760 && taskbarSafeCompactPosition.Y == 626,
+        "The compact merge title must remain movable to a screen edge while staying above the taskbar.");
+}
+
+static void TestTaskbarWorkAreaClamp()
+{
+    var position = MainWindow.ClampFencePositionToWorkArea(
+        new System.Windows.Point(1500, 950),
+        new System.Windows.Size(360, 300),
+        new System.Windows.Rect(0, 0, 1920, 1040));
+    Assert(position.X == 1500 && position.Y == 740,
+        "Dropping a Fence over a bottom taskbar must move it back above the taskbar.");
+
+    var leftTaskbarPosition = MainWindow.ClampFencePositionToWorkArea(
+        new System.Windows.Point(0, 100),
+        new System.Windows.Size(360, 300),
+        new System.Windows.Rect(48, 0, 1872, 1080));
+    Assert(leftTaskbarPosition.X == 48,
+        "The usable work-area clamp must also respect a taskbar docked to a side.");
+
+    var usableArea = new System.Windows.Rect(0, 0, 1920, 1040);
+    Assert(MainWindow.GetAutoRollupEdge(new System.Windows.Rect(200, 5, 360, 300), usableArea) == "Top",
+        "Top-edge roll-up must not depend on grid snapping.");
+    Assert(MainWindow.GetAutoRollupEdge(new System.Windows.Rect(200, 740, 360, 300), usableArea) == "Bottom",
+        "Bottom-edge roll-up must use the taskbar-safe work-area boundary.");
+    Assert(MainWindow.GetAutoRollupEdge(
+               new System.Windows.Rect(200, 740, 360, 300), usableArea, allowBottom: false) == null,
+        "Bottom-edge roll-up must be independently disableable.");
+    Assert(MainWindow.GetAutoRollupEdge(new System.Windows.Rect(200, 300, 360, 300), usableArea) == null,
+        "A Fence away from an edge must remain expanded.");
+    Assert(!FenceControl.ShouldUndockDuringHeaderDrag(
+               "Bottom", new System.Windows.Rect(200, 740, 360, 300), usableArea) &&
+           FenceControl.ShouldUndockDuringHeaderDrag(
+               "Bottom", new System.Windows.Rect(200, 720, 360, 300), usableArea),
+        "A bottom-docked Fence must keep its inverted layout at the edge and restore its ordinary layout after being dragged clear.");
+    Assert(FenceControl.ShouldUndockDuringHeaderDrag(
+               "Top", new System.Windows.Rect(200, 20, 360, 300), usableArea),
+        "Dragging a top-docked Fence away from the edge must release its docked state.");
+    Assert(FenceControl.GetFenceContextMenuPlacement("Bottom") ==
+               System.Windows.Controls.Primitives.PlacementMode.Top &&
+           FenceControl.GetFenceContextMenuPlacement("Top") ==
+               System.Windows.Controls.Primitives.PlacementMode.MousePoint,
+        "A bottom-docked Fence menu must open upward instead of entering the taskbar.");
+    Assert(FenceControl.GetDockedFenceTop("Bottom", 34, usableArea) == 1006 &&
+           FenceControl.GetDockedFenceTop("Bottom", 300, usableArea) == 740,
+        "Bottom docking must use the taskbar-safe work-area bottom for both rolled-up and expanded layouts.");
 }
 
 static void TestMetadataOrganizer(string root)
@@ -404,6 +896,12 @@ static void TestConfigRoundTrip(string root)
         EnableDesktopDoubleClick = false,
         EnableDesktopIconIntegration = false,
         EnableSnapToGrid = false,
+        GridSize = 24,
+        SnapWhileDragging = true,
+        AllowBottomEdgeRollup = false,
+        BottomDockTitleAtBottom = false,
+        TopDockTitleAtBottomOnExpand = true,
+        DirectPageHotkeys = ["Ctrl+1", "Ctrl+2", "", "", "", "", "", "", "", "", "", ""],
         PreviousPageHotkey = "Ctrl+Shift+Left",
         NextPageHotkey = "Ctrl+Shift+Right",
         ToggleTopmostHotkey = "Win+Space",
@@ -446,6 +944,8 @@ static void TestConfigRoundTrip(string root)
                 ExpandedHeight = 340,
                 BackgroundColor = "#CC112233",
                 HeaderColor = "#AA445566",
+                HeaderGradientEnabled = true,
+                HeaderGradientColor = "#AA778899",
                 Opacity = 0.65,
                 TitleAlignment = "Center",
                 ShowPath = false,
@@ -480,6 +980,14 @@ static void TestConfigRoundTrip(string root)
     Assert(!loaded.EnableDesktopDoubleClick, "Config should restore the desktop double-click setting.");
     Assert(!loaded.EnableDesktopIconIntegration, "Config should restore the desktop icon integration switch.");
     Assert(!loaded.EnableSnapToGrid, "Config should restore the snap-to-grid setting.");
+    Assert(loaded.GridSize == 24 && loaded.SnapWhileDragging,
+        "Config should restore the custom grid size and real-time snapping mode.");
+    Assert(!loaded.AllowBottomEdgeRollup &&
+           !loaded.BottomDockTitleAtBottom && loaded.TopDockTitleAtBottomOnExpand,
+        "Config should restore the selectable bottom-dock title behavior.");
+    Assert(loaded.DirectPageHotkeys[0] == "Ctrl+1" && loaded.DirectPageHotkeys[1] == "Ctrl+2" &&
+           string.IsNullOrEmpty(loaded.DirectPageHotkeys[2]),
+        "Config should restore customized and disabled direct-page shortcuts.");
     Assert(loaded.PreviousPageHotkey == "Ctrl+Shift+Left" &&
            loaded.NextPageHotkey == "Ctrl+Shift+Right" &&
            loaded.ToggleTopmostHotkey == "Ctrl+Alt+Space",
@@ -507,6 +1015,10 @@ static void TestConfigRoundTrip(string root)
     Assert(Math.Abs(loaded.Fences[0].Left - 12) < 0.01, "Config should restore left position.");
     Assert(loaded.Fences[0].BackgroundColor == "#CC112233", "Config should restore Fence background color.");
     Assert(loaded.Fences[0].HeaderColor == "#AA445566", "Config should restore Fence header color.");
+    Assert(loaded.Fences[0].HeaderGradientEnabled &&
+           loaded.Fences[0].HeaderGradientColor == "#AA778899" &&
+           FenceAppearanceBrush.CreateHeaderBrush(loaded.Fences[0]) is System.Windows.Media.LinearGradientBrush,
+        "Config and rendering should preserve the optional title-bar gradient.");
     Assert(Math.Abs(loaded.Fences[0].Opacity - 0.65) < 0.01, "Config should restore Fence opacity.");
     Assert(loaded.Fences[0].TitleAlignment == "Center" && !loaded.Fences[0].ShowPath && loaded.Fences[0].UseCleanStyle,
         "Config should restore title alignment, path visibility, and frame style.");
@@ -735,6 +1247,13 @@ static void TestFolderItemLoadingAndMove(string root)
     var assignedOrder = service.LoadAssignedItems([textPath, folderPath]);
     Assert(assignedOrder.Select(item => item.FullPath).SequenceEqual([textPath, folderPath], StringComparer.OrdinalIgnoreCase),
         "Assigned desktop items must preserve the persisted manual order instead of sorting again by type or name.");
+    System.Windows.Media.ImageSource? loadedShellIcon = null;
+    var iconLoad = service.LoadIconsAsync([assignedOrder[0]], (_, icon) => loadedShellIcon = icon, CancellationToken.None);
+    Assert(Task.WhenAny(iconLoad, Task.Delay(TimeSpan.FromSeconds(5))).GetAwaiter().GetResult() == iconLoad,
+        "Background Shell icon loading must not leave the settings item list on placeholders indefinitely.");
+    iconLoad.GetAwaiter().GetResult();
+    Assert(loadedShellIcon is not null,
+        "Background Shell icon loading must replace the settings placeholder with a real file icon.");
     var invalidSavedPath = "invalid\0desktop-item";
     Assert(service.LoadAssignedItems([invalidSavedPath, textPath]).Single().FullPath == textPath,
         "An invalid saved assignment path must be ignored without preventing valid items from loading.");
@@ -888,6 +1407,23 @@ static void TestFenceControlBindingAndLayout(string root)
             var loadedItems = control.LoadedItemsForTesting;
             Assert(loadedItems.Any(item => item.FullPath == filePath), "Fence control should bind the real file FullPath.");
             Assert(loadedItems.Any(item => item.FullPath == childFolder), "Fence control should bind the real folder FullPath.");
+            Assert(!control.IsPortalNavigationVisibleForTesting, "Folder Portal root should keep the redundant navigation bar hidden.");
+            var tabDragPreview = control.CreateTabDragPreviewForTesting();
+            Assert(tabDragPreview.Content is FenceControl
+                   {
+                       Width: > 0,
+                       Height: > 0,
+                       IsHitTestVisible: false
+                   } previewFence &&
+                   previewFence.LoadedItemsForTesting.Count == loadedItems.Count,
+                "Detached-tab dragging must create a real non-interactive Fence preview with its items and icons loaded.");
+            tabDragPreview.Close();
+            control.NavigatePortalForTesting(childFolder);
+            Assert(string.Equals(control.PortalPathForTesting, childFolder, StringComparison.OrdinalIgnoreCase),
+                "Opening a subfolder inside a Folder Portal must navigate in place.");
+            control.NavigatePortalUpForTesting();
+            Assert(string.Equals(control.PortalPathForTesting, folder, StringComparison.OrdinalIgnoreCase),
+                "Folder Portal Up must return to its configured root without escaping it.");
 
             var desktopGroupConfig = new FenceConfig
             {
@@ -921,6 +1457,8 @@ static void TestFenceControlBindingAndLayout(string root)
             desktopGroup.SetTabStatus(3, 1);
             Assert(desktopGroup.IsTabNavigationVisibleForTesting, "Stacked Fences should expose direct previous/next tab navigation.");
             desktopGroup.SetTabStatus(3, 1, ["One", "Two", "Three"], useTabStrip: true, equalTabWidths: false);
+            Assert(desktopGroup.AreTabTitlesCenteredForTesting,
+                "Tab titles should fill their tab and center text horizontally.");
             Assert(desktopGroup.TabColumnWidthsForTesting.Count == 4 &&
                    desktopGroup.TabColumnWidthsForTesting.Take(3).All(width => width.IsAuto) &&
                    desktopGroup.TabColumnWidthsForTesting[3].IsStar,
@@ -929,6 +1467,18 @@ static void TestFenceControlBindingAndLayout(string root)
             Assert(desktopGroup.TabColumnWidthsForTesting.Count == 3 &&
                    desktopGroup.TabColumnWidthsForTesting.All(width => width.IsStar),
                 "Equal-width tabs should divide the complete title bar into equal columns.");
+            var dragTabs = new[]
+            {
+                new FenceConfig { Id = "drag-one" },
+                new FenceConfig { Id = "drag-two" },
+                new FenceConfig { Id = "drag-three" }
+            };
+            desktopGroup.SetTabStatus(3, 1, ["One", "Two", "Three"], useTabStrip: true,
+                equalTabWidths: true, tabConfigs: dragTabs);
+            desktopGroup.HideTabForActiveDrag("drag-two");
+            Assert(desktopGroup.VisibleTabCountForTesting == 2 &&
+                   desktopGroup.TabColumnWidthsForTesting[1].Value == 0,
+                "The tab being dragged out must disappear from the original group's title strip.");
             desktopGroup.StopForTesting();
 
             var secondFence = new FenceControl(new FenceConfig
@@ -1109,6 +1659,44 @@ static void TestFenceControlBindingAndLayout(string root)
             collapsedControl.DoubleClickTitleBarForTesting();
             Assert(collapsedControl.IsCollapsedForTesting, "A second title-bar double-click should collapse the Fence again.");
             Assert(Math.Abs(collapsedControl.Height - 34) < 0.01, "Second title-bar double-click should restore compact height.");
+
+            var bottomDockedConfig = new FenceConfig
+            {
+                Width = 300,
+                Height = 330,
+                ExpandedHeight = 330,
+                IsCollapsed = true,
+                EdgeDock = "Bottom"
+            };
+            var bottomDockedControl = new FenceControl(bottomDockedConfig);
+            Assert(bottomDockedControl.IsTitleAtBottomForTesting,
+                "A bottom-docked Fence must keep its title bar at the bottom while rolled up.");
+            bottomDockedControl.ToggleCollapsedForTesting();
+            Assert(bottomDockedControl.IsTitleAtBottomForTesting &&
+                   bottomDockedControl.IsResizeHandleAtTopForTesting &&
+                   bottomDockedControl.ResizeGripOrientationForTesting == "Top" &&
+                   !bottomDockedControl.IsCollapsedForTesting,
+                "A bottom title must reveal content upward and mirror its resize grip into the upper-right corner.");
+            bottomDockedControl.StopForTesting();
+
+            var topDockedConfig = new FenceConfig
+            {
+                Width = 300,
+                Height = 330,
+                ExpandedHeight = 330,
+                IsCollapsed = true,
+                EdgeDock = "Top"
+            };
+            var topDockedControl = new FenceControl(topDockedConfig)
+            {
+                TopDockTitleAtBottomOnExpand = true
+            };
+            topDockedControl.ToggleCollapsedForTesting();
+            Assert(topDockedControl.IsTitleAtBottomForTesting &&
+                   topDockedControl.IsResizeHandleAtTopForTesting &&
+                   !topDockedControl.IsCollapsedForTesting,
+                "The mirrored top-dock option must expand downward with the title bar at the Fence bottom.");
+            topDockedControl.StopForTesting();
         }
         catch (Exception ex)
         {

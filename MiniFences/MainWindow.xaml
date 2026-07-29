@@ -14,6 +14,7 @@
     <Window.ContextMenu>
         <ContextMenu Opened="DesktopContextMenu_Opened">
             <MenuItem x:Name="DesktopSettingsMenuItem" Header="Settings" Click="SettingsMenuItem_Click" />
+            <MenuItem x:Name="DesktopUndoMenuItem" Header="Undo Last Action" Click="UndoLastActionMenuItem_Click" />
             <Separator />
             <MenuItem x:Name="DesktopNewFenceMenuItem" Header="New Fence" Click="NewFenceMenuItem_Click" />
             <MenuItem x:Name="DesktopNewFolderPortalMenuItem" Header="New Folder Portal..." Click="NewFolderPortalMenuItem_Click" />
@@ -31,6 +32,7 @@
                 <MenuItem x:Name="DesktopRowsLayoutMenuItem" Header="Rows" Tag="Rows" Click="AutoLayoutMenuItem_Click" />
             </MenuItem>
             <MenuItem x:Name="DesktopRefreshAllMenuItem" Header="Refresh All" Click="RefreshAllMenuItem_Click" />
+            <MenuItem x:Name="DesktopSwapMonitorsMenuItem" Header="Swap monitor contents" Click="SwapMonitorContentsMenuItem_Click" />
             <Separator />
             <MenuItem x:Name="DesktopCreateCategoryFencesMenuItem" Header="Create Category Fences" Click="CreateCategoryFencesMenuItem_Click" />
             <MenuItem x:Name="DesktopOrganizeMenuItem" Header="Organize Desktop by Type..." Click="OrganizeDesktopMenuItem_Click" />
@@ -53,10 +55,26 @@
         </ContextMenu>
     </Window.ContextMenu>
 
-    <Canvas x:Name="Workspace"
-            Background="Transparent"
-            AllowDrop="True"
-            DragOver="Workspace_DragOver"
-            Drop="Workspace_Drop"
-            MouseLeftButtonDown="Workspace_MouseLeftButtonDown" />
+    <Grid>
+        <Border x:Name="PeekBackdrop"
+                Background="#A0121822"
+                Opacity="0"
+                Visibility="Collapsed"
+                MouseLeftButtonDown="PeekBackdrop_MouseLeftButtonDown" />
+        <Canvas x:Name="Workspace"
+                Background="Transparent"
+                AllowDrop="True"
+                DragOver="Workspace_DragOver"
+                Drop="Workspace_Drop"
+                MouseLeftButtonDown="Workspace_MouseLeftButtonDown" />
+        <Border x:Name="FenceSelectionOverlay"
+                Visibility="Collapsed"
+                HorizontalAlignment="Left"
+                VerticalAlignment="Top"
+                Background="#304B9BFF"
+                BorderBrush="#FF75B6FF"
+                BorderThickness="2"
+                CornerRadius="8"
+                IsHitTestVisible="False" />
+    </Grid>
 </Window>

@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Collections.Concurrent;
+using System.Drawing.Imaging;
 using System.Windows;
 using System.Windows.Interop;
 using System.Windows.Media;
@@ -13,6 +14,8 @@ namespace MiniFences.Services;
 
 public sealed class FolderItemService
 {
+    private static readonly ImageSource FilePlaceholderIcon = CreatePlaceholderIcon(isFolder: false);
+    private static readonly ImageSource FolderPlaceholderIcon = CreatePlaceholderIcon(isFolder: true);
     private readonly Action<ProcessStartInfo> _startProcess;
 
     public FolderItemService()
@@ -37,6 +40,58 @@ public sealed class FolderItemService
 
     public static ImageSource? GetTypeIcon(string extension, bool isFolder = false) =>
         ShellIconProvider.GetTypeIcon(extension, isFolder);
+
+    public async Task LoadIconsAsync(IEnumerable<FolderItem> items,
+        Action<FolderItem, ImageSource?> applyIcon, CancellationToken cancellationToken)
+    {
+        await Parallel.ForEachAsync(items,
+            new ParallelOptions { MaxDegreeOfParallelism = 4, CancellationToken = cancellationToken },
+            async (item, token) =>
+            {
+                ImageSource? icon = null;
+                var retryDelays = new[] { 0, 400, 1200, 2500 };
+                foreach (var delay in retryDelays)
+                {
+                    if (delay > 0) await Task.Delay(delay, token);
+                    icon = await LoadShellIconOnStaAsync(item.FullPath, token);
+                    if (icon != null) break;
+                }
+                token.ThrowIfCancellationRequested();
+                if (icon == null) AppLogger.Log($"Shell icon remained unavailable after startup retries: {item.FullPath}");
+                applyIcon(item, icon);
+            });
+    }
+
+    private static async Task<ImageSource?> LoadShellIconOnStaAsync(string path, CancellationToken cancellationToken)
+    {
+        var completion = new TaskCompletionSource<ImageSource?>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var thread = new Thread(() =>
+        {
+            try
+            {
+                completion.TrySetResult(ShellIconProvider.GetIcon(path));
+            }
+            catch (Exception ex)
+            {
+                completion.TrySetException(ex);
+            }
+        })
+        {
+            IsBackground = true,
+            Name = "MiniFences Shell icon loader"
+        };
+        thread.SetApartmentState(ApartmentState.STA);
+        thread.Start();
+        try
+        {
+            return await completion.Task.WaitAsync(TimeSpan.FromSeconds(5), cancellationToken);
+        }
+        catch (TimeoutException)
+        {
+            AppLogger.Log($"Shell icon loading timed out: {path}");
+            return null;
+        }
+    }
 
     public IReadOnlyList<FolderItem> LoadAssignedItems(IEnumerable<string> paths)
     {
@@ -230,6 +285,7 @@ public sealed class FolderItemService
             var skipped = 0;
             var errors = new List<string>();
             var movedPaths = new List<string>();
+            var moves = new List<FolderMoveEntry>();
 
             foreach (var sourcePath in sourcePaths.Where(path => !string.IsNullOrWhiteSpace(path)))
             {
@@ -262,6 +318,7 @@ public sealed class FolderItemService
                     MoveFileSystemEntry(fullSource, destinationPath);
                     moved += 1;
                     movedPaths.Add(destinationPath);
+                    moves.Add(new FolderMoveEntry(fullSource, destinationPath));
                     AppLogger.Log($"Move succeeded: {fullSource} -> {destinationPath}");
                 }
                 catch (Exception itemEx)
@@ -271,7 +328,7 @@ public sealed class FolderItemService
                 }
             }
 
-            return new FolderMoveResult(moved, skipped, errors, movedPaths);
+            return new FolderMoveResult(moved, skipped, errors, movedPaths, moves);
         }
         catch (Exception ex)
         {
@@ -424,8 +481,42 @@ public sealed class FolderItemService
             ModifiedAt = info.LastWriteTime,
             CreatedAt = info.CreationTime,
             Size = isDirectory ? 0 : ((FileInfo)info).Length,
-            Icon = ShellIconProvider.GetIcon(path)
+            // Shell icon handlers can block indefinitely. Use a managed placeholder for the
+            // initial frame and replace it with the real icon from the bounded background pass.
+            Icon = ShellIconProvider.TryGetCachedIcon(path) ??
+                   (isDirectory ? FolderPlaceholderIcon : FilePlaceholderIcon)
         };
+    }
+
+    private static ImageSource CreatePlaceholderIcon(bool isFolder)
+    {
+        var drawing = new DrawingGroup();
+        if (isFolder)
+        {
+            var geometry = Geometry.Parse("M 5,12 L 18,12 L 23,18 L 43,18 L 43,40 L 5,40 Z");
+            drawing.Children.Add(new GeometryDrawing(
+                new SolidColorBrush(System.Windows.Media.Color.FromRgb(244, 183, 67)),
+                new System.Windows.Media.Pen(new SolidColorBrush(System.Windows.Media.Color.FromRgb(255, 215, 128)), 1.5),
+                geometry));
+        }
+        else
+        {
+            var body = Geometry.Parse("M 10,5 L 31,5 L 42,16 L 42,43 L 10,43 Z");
+            var fold = Geometry.Parse("M 31,5 L 31,16 L 42,16");
+            drawing.Children.Add(new GeometryDrawing(
+                new SolidColorBrush(System.Windows.Media.Color.FromRgb(104, 151, 190)),
+                new System.Windows.Media.Pen(new SolidColorBrush(System.Windows.Media.Color.FromRgb(181, 216, 241)), 1.5),
+                body));
+            drawing.Children.Add(new GeometryDrawing(
+                null,
+                new System.Windows.Media.Pen(new SolidColorBrush(System.Windows.Media.Color.FromRgb(210, 232, 247)), 1.5),
+                fold));
+        }
+
+        drawing.Freeze();
+        var image = new DrawingImage(drawing);
+        image.Freeze();
+        return image;
     }
 
     private static string GetAvailableDestinationPath(string sourcePath, string destinationFolder)
@@ -582,6 +673,12 @@ public sealed class FolderItemService
             return icon;
         }
 
+        public static ImageSource? TryGetCachedIcon(string path)
+        {
+            var cacheKey = GetCacheKey(path);
+            return IconCache.TryGetValue(cacheKey, out var cached) ? cached : null;
+        }
+
         private static ImageSource? LoadIcon(string path)
         {
             var iconHandle = IntPtr.Zero;
@@ -595,12 +692,7 @@ public sealed class FolderItemService
                 }
 
                 iconHandle = info.hIcon;
-                var source = Imaging.CreateBitmapSourceFromHIcon(
-                    iconHandle,
-                    Int32Rect.Empty,
-                    BitmapSizeOptions.FromWidthAndHeight(48, 48));
-                source.Freeze();
-                return source;
+                return CreateShellBitmapSource(iconHandle);
             }
             catch
             {
@@ -645,12 +737,60 @@ public sealed class FolderItemService
                 var result = SHGetFileInfo(path, attributes, ref info, (uint)Marshal.SizeOf<ShFileInfo>(), flags);
                 if (result == IntPtr.Zero || info.hIcon == IntPtr.Zero) return null;
                 iconHandle = info.hIcon;
-                var source = Imaging.CreateBitmapSourceFromHIcon(iconHandle, Int32Rect.Empty, BitmapSizeOptions.FromWidthAndHeight(48, 48));
-                source.Freeze();
-                return source;
+                return CreateShellBitmapSource(iconHandle);
             }
             catch { return null; }
             finally { if (iconHandle != IntPtr.Zero) DestroyIcon(iconHandle); }
+        }
+
+        private static bool HasVisiblePixels(BitmapSource source)
+        {
+            try
+            {
+                var converted = new FormatConvertedBitmap(source, PixelFormats.Bgra32, null, 0);
+                var stride = converted.PixelWidth * 4;
+                var pixels = new byte[stride * converted.PixelHeight];
+                converted.CopyPixels(pixels, stride, 0);
+                for (var index = 3; index < pixels.Length; index += 4)
+                {
+                    if (pixels[index] >= 8) return true;
+                }
+            }
+            catch
+            {
+                // A readable shell bitmap is preferable to discarding it merely because
+                // a pixel-format conversion is unsupported by a third-party icon handler.
+                return true;
+            }
+
+            return false;
+        }
+
+        private static BitmapSource? CreateShellBitmapSource(IntPtr iconHandle)
+        {
+            try
+            {
+                // Several archive shell extensions expose an HICON whose RGB data is
+                // correct but whose 32-bit alpha channel is empty. WPF's direct HICON
+                // conversion consequently renders it transparent. Icon.ToBitmap applies
+                // the legacy AND mask first, matching Explorer's rendering path.
+                using var icon = (System.Drawing.Icon)System.Drawing.Icon.FromHandle(iconHandle).Clone();
+                using var bitmap = icon.ToBitmap();
+                using var stream = new MemoryStream();
+                bitmap.Save(stream, ImageFormat.Png);
+                stream.Position = 0;
+                var source = new BitmapImage();
+                source.BeginInit();
+                source.CacheOption = BitmapCacheOption.OnLoad;
+                source.StreamSource = stream;
+                source.EndInit();
+                source.Freeze();
+                return HasVisiblePixels(source) ? source : null;
+            }
+            catch
+            {
+                return null;
+            }
         }
 
         [DllImport("Shell32.dll", CharSet = CharSet.Unicode)]
@@ -677,4 +817,7 @@ public sealed record FolderMoveResult(
     int Moved,
     int Skipped,
     IReadOnlyList<string> Errors,
-    IReadOnlyList<string> MovedPaths);
+    IReadOnlyList<string> MovedPaths,
+    IReadOnlyList<FolderMoveEntry>? Moves = null);
+
+public sealed record FolderMoveEntry(string SourcePath, string DestinationPath);
