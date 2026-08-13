@@ -5,9 +5,11 @@ public partial class App : System.Windows.Application
     private const string MutexName = @"Local\MiniFences.SingleInstance";
     private const string WakeEventName = @"Local\MiniFences.WakeExistingInstance";
     private const string ExitEventName = @"Local\MiniFences.ExitExistingInstance";
+    private const string NewFenceEventName = @"Local\MiniFences.NewFence";
     private Mutex? _singleInstanceMutex;
     private EventWaitHandle? _wakeEvent;
     private EventWaitHandle? _exitEvent;
+    private EventWaitHandle? _newFenceEvent;
     private Thread? _wakeThread;
     private bool _ownsSingleInstanceMutex;
     private volatile bool _isExiting;
@@ -15,6 +17,10 @@ public partial class App : System.Windows.Application
 
     protected override void OnStartup(System.Windows.StartupEventArgs e)
     {
+        if (TryRunDesktopIconWatchdog(e.Args))
+        {
+            return;
+        }
         DispatcherUnhandledException += App_DispatcherUnhandledException;
         AppDomain.CurrentDomain.UnhandledException += CurrentDomain_UnhandledException;
         TaskScheduler.UnobservedTaskException += TaskScheduler_UnobservedTaskException;
@@ -24,6 +30,10 @@ public partial class App : System.Windows.Application
             if (e.Args.Any(argument => string.Equals(argument, "--exit-existing", StringComparison.OrdinalIgnoreCase)))
             {
                 SignalExistingInstanceExit();
+            }
+            else if (e.Args.Any(argument => string.Equals(argument, "--new-fence", StringComparison.OrdinalIgnoreCase)))
+            {
+                SignalExistingInstanceNewFence();
             }
             else
             {
@@ -38,16 +48,58 @@ public partial class App : System.Windows.Application
         base.OnStartup(e);
         _wakeEvent = new EventWaitHandle(false, EventResetMode.AutoReset, WakeEventName);
         _exitEvent = new EventWaitHandle(false, EventResetMode.AutoReset, ExitEventName);
+        _newFenceEvent = new EventWaitHandle(false, EventResetMode.AutoReset, NewFenceEventName);
         StartWakeListener();
         var openSettings = !e.Args.Any(argument =>
             string.Equals(argument, "--background", StringComparison.OrdinalIgnoreCase));
         MainWindow = new MainWindow(openSettings);
         MainWindow.Show();
+        new Services.DesktopIntegrationService().EnsureDesktopContextMenu();
+        if (e.Args.Any(argument => string.Equals(argument, "--new-fence", StringComparison.OrdinalIgnoreCase)))
+            Dispatcher.BeginInvoke(() => ((MainWindow)MainWindow).CreateFenceFromDesktopContext());
+    }
+
+    private static bool TryRunDesktopIconWatchdog(IReadOnlyList<string> args)
+    {
+        var markerIndex = Array.FindIndex(args.ToArray(), argument =>
+            string.Equals(argument, "--desktop-icon-watchdog", StringComparison.OrdinalIgnoreCase));
+        if (markerIndex < 0 || markerIndex + 1 >= args.Count ||
+            !int.TryParse(args[markerIndex + 1], out var processId))
+        {
+            return false;
+        }
+
+        try
+        {
+            using var owner = System.Diagnostics.Process.GetProcessById(processId);
+            owner.WaitForExit();
+        }
+        catch
+        {
+            // The owner already exited; restoration is still required.
+        }
+
+        var service = new Services.DesktopIconLayoutService();
+        var restored = false;
+        for (var attempt = 0; attempt < 20 && !restored; attempt += 1)
+        {
+            restored = service.SetVisible(true);
+            if (!restored) Thread.Sleep(100);
+        }
+        Services.AppLogger.Log($"Desktop icon recovery watchdog completed. Restored={restored}.");
+        Environment.Exit(0);
+        return true;
     }
 
     protected override void OnExit(System.Windows.ExitEventArgs e)
     {
         _isExiting = true;
+        // OnClosing is the primary cleanup path. This second, idempotent call
+        // covers shutdown paths where WPF reaches App.OnExit directly.
+        if (MainWindow is MainWindow mainWindow)
+        {
+            mainWindow.RestoreNativeDesktopIconsOnExit();
+        }
         _wakeEvent?.Set();
         _exitEvent?.Set();
         _wakeThread?.Join(TimeSpan.FromMilliseconds(500));
@@ -55,6 +107,8 @@ public partial class App : System.Windows.Application
         _wakeEvent = null;
         _exitEvent?.Dispose();
         _exitEvent = null;
+        _newFenceEvent?.Dispose();
+        _newFenceEvent = null;
         if (_ownsSingleInstanceMutex)
         {
             _singleInstanceMutex?.ReleaseMutex();
@@ -120,6 +174,16 @@ public partial class App : System.Windows.Application
         }
     }
 
+    private static void SignalExistingInstanceNewFence()
+    {
+        try
+        {
+            using var newFenceEvent = EventWaitHandle.OpenExisting(NewFenceEventName);
+            newFenceEvent.Set();
+        }
+        catch { SignalExistingInstance(); }
+    }
+
     private void StartWakeListener()
     {
         _wakeThread = new Thread(() =>
@@ -128,7 +192,7 @@ public partial class App : System.Windows.Application
             {
                 try
                 {
-                    var signaled = WaitHandle.WaitAny([_wakeEvent!, _exitEvent!]);
+                    var signaled = WaitHandle.WaitAny([_wakeEvent!, _exitEvent!, _newFenceEvent!]);
                     if (_isExiting)
                     {
                         return;
@@ -144,6 +208,15 @@ public partial class App : System.Windows.Application
                             }
                         });
                         return;
+                    }
+
+                    if (signaled == 2)
+                    {
+                        Dispatcher.BeginInvoke(() =>
+                        {
+                            if (MainWindow is MainWindow mainWindow) mainWindow.CreateFenceFromDesktopContext();
+                        });
+                        continue;
                     }
 
                     Dispatcher.BeginInvoke(() =>

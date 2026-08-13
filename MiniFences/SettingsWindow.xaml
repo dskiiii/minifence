@@ -2,6 +2,7 @@
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="MiniFences Settings"
+        PreviewKeyDown="SettingsWindow_PreviewKeyDown"
         Icon="/Assets/AppIcon.ico"
         Width="1180"
         Height="780"
@@ -113,6 +114,12 @@
                     <TextBlock Text="MiniFences" FontSize="24" FontWeight="SemiBold" Foreground="#FF151B23" />
                     <TextBlock x:Name="SettingsCaptionText" Text="Settings" Margin="0,3,0,0" Foreground="#FF66717E" />
                 </StackPanel>
+                <TextBlock x:Name="SidebarVersionText"
+                           DockPanel.Dock="Bottom"
+                           Margin="10,14,10,2"
+                           Foreground="#FF7B8794"
+                           FontSize="12"
+                           Text="Version" />
                 <ListBox x:Name="NavigationList"
                          SelectionChanged="NavigationList_SelectionChanged"
                          BorderThickness="0"
@@ -142,6 +149,7 @@
                     <ListBoxItem x:Name="RollupNav" Tag="Rollup" Content="Roll-up" />
                     <ListBoxItem x:Name="TabsNav" Tag="Tabs" Content="Tabs" />
                     <ListBoxItem x:Name="PersonalizeNav" Tag="Appearance" Content="Appearance" />
+                    <ListBoxItem x:Name="HistoryNav" Tag="History" Content="操作历史" />
                     <ListBoxItem x:Name="GeneralNav" Tag="General" Content="General" />
                     <ListBoxItem x:Name="AboutNav" Tag="About" Content="About" />
                 </ListBox>
@@ -177,10 +185,10 @@
                     </Border>
                     <TextBlock x:Name="QuickActionsTitle" Style="{StaticResource GroupTitle}" Text="Quick actions" Margin="0,26,0,12" />
                     <WrapPanel>
-                        <Button x:Name="WelcomeNewFenceButton" Content="New Fence" Click="NewFenceButton_Click" />
-                        <Button x:Name="WelcomeRefreshButton" Content="Refresh all" Click="RefreshButton_Click" />
-                        <Button x:Name="WelcomeToggleButton" Content="Disable MiniFences" Click="WelcomeIntegrationButton_Click" />
-                        <Button x:Name="WelcomeTopmostButton" Content="Pin Fences on top" Click="TopmostButton_Click" />
+                        <Button x:Name="WelcomeNewFenceButton" Content="New Fence" ClickMode="Press" Click="NewFenceButton_Click" />
+                        <Button x:Name="WelcomeRefreshButton" Content="Refresh all" ClickMode="Press" Click="RefreshButton_Click" />
+                        <Button x:Name="WelcomeToggleButton" Content="Disable MiniFences" ClickMode="Press" Click="WelcomeIntegrationButton_Click" />
+                        <Button x:Name="WelcomeTopmostButton" Content="Pin Fences on top" ClickMode="Press" Click="TopmostButton_Click" />
                     </WrapPanel>
                 </StackPanel>
             </Grid>
@@ -347,7 +355,7 @@
                         <TextBlock x:Name="DefaultFenceLabel" Text="Default Fence" VerticalAlignment="Center" />
                         <ComboBox x:Name="DefaultFenceComboBox" Grid.Column="1" DisplayMemberPath="Title" SelectionChanged="DefaultFenceComboBox_SelectionChanged" />
                     </Grid>
-                    <Grid Height="0" Visibility="Collapsed">
+                    <Grid MinHeight="330">
                         <Grid.ColumnDefinitions><ColumnDefinition Width="230" /><ColumnDefinition Width="18" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
                         <DockPanel Grid.Column="0">
                             <WrapPanel DockPanel.Dock="Bottom" Margin="0,10,0,0">
@@ -362,6 +370,7 @@
                                 <RowDefinition Height="36" /><RowDefinition Height="36" /><RowDefinition Height="36" />
                                 <RowDefinition Height="36" /><RowDefinition Height="36" /><RowDefinition Height="36" />
                                 <RowDefinition Height="36" /><RowDefinition Height="36" />
+                                <RowDefinition Height="36" /><RowDefinition Height="36" />
                             </Grid.RowDefinitions>
                             <CheckBox x:Name="RuleEnabledCheckBox" Grid.ColumnSpan="2" Content="Rule enabled" Click="RuleEditor_Changed" />
                             <TextBlock x:Name="RuleNameLabel" Grid.Row="1" Text="Rule name" VerticalAlignment="Center" /><TextBox x:Name="RuleNameTextBox" Grid.Row="1" Grid.Column="1" TextChanged="RuleEditor_Changed" />
@@ -372,6 +381,10 @@
                             <TextBlock x:Name="RuleSizeLabel" Grid.Row="6" Text="Size range (MB)" VerticalAlignment="Center" />
                             <StackPanel Grid.Row="6" Grid.Column="1" Orientation="Horizontal"><TextBox x:Name="RuleMinimumSizeTextBox" Width="90" TextChanged="RuleEditor_Changed" /><TextBlock Text=" to " VerticalAlignment="Center" /><TextBox x:Name="RuleMaximumSizeTextBox" Width="90" TextChanged="RuleEditor_Changed" /></StackPanel>
                             <CheckBox x:Name="RuleFoldersOnlyCheckBox" Grid.Row="7" Grid.Column="1" Content="Folders only" Click="RuleEditor_Changed" />
+                            <TextBlock x:Name="RuleExactNamesLabel" Grid.Row="8" Text="Exact names" VerticalAlignment="Center" />
+                            <TextBox x:Name="RuleExactNamesTextBox" Grid.Row="8" Grid.Column="1" ToolTip="Examples: README; Budget.xlsx" TextChanged="RuleEditor_Changed" />
+                            <TextBlock x:Name="RuleShortcutTargetLabel" Grid.Row="9" Text="Shortcut target" VerticalAlignment="Center" />
+                            <TextBox x:Name="RuleShortcutTargetTextBox" Grid.Row="9" Grid.Column="1" ToolTip="Examples: *steam*; https://company.example/*" TextChanged="RuleEditor_Changed" />
                         </Grid>
                     </Grid>
                 </StackPanel>
@@ -444,14 +457,17 @@
                     <CheckBox x:Name="EnableRollupCheckBox" Content="Enabled" Click="RollupSettings_Changed" Margin="0,0,0,10" />
                     <CheckBox x:Name="DoubleClickRollupCheckBox" Content="Double-click the Fence title to roll up" Click="RollupSettings_Changed" Margin="0,0,0,10" />
                     <CheckBox x:Name="AutoEdgeRollupCheckBox" Content="Automatically roll up at the top or bottom screen edge" Click="RollupSettings_Changed" Margin="0,0,0,10" />
+                    <CheckBox x:Name="AllowBottomEdgeRollupCheckBox" Content="Allow roll-up at the bottom screen edge" Click="RollupSettings_Changed" Margin="22,0,0,10" />
+                    <CheckBox x:Name="BottomDockTitleCheckBox" Content="Keep the title bar at the bottom when docked there" Click="RollupSettings_Changed" Margin="22,0,0,10" />
+                    <CheckBox x:Name="TopDockTitleAtBottomOnExpandCheckBox" Content="Move the title bar to the bottom when a top-docked Fence expands" Click="RollupSettings_Changed" Margin="22,0,0,10" />
                     <CheckBox x:Name="ClickTitleExpandCheckBox" Content="Click the title to expand" Click="RollupSettings_Changed" Margin="0,0,0,10" />
                     <CheckBox x:Name="HoverTitleExpandCheckBox" Content="Hover over the title to expand" Click="RollupSettings_Changed" Margin="0,0,0,26" />
                     <TextBlock x:Name="RollupPreviewTitle" Style="{StaticResource GroupTitle}" Text="Interactive preview" />
-                    <Border Width="520" Height="190" HorizontalAlignment="Left" Background="#FF6D7B89" CornerRadius="7" Padding="24">
-                        <Border x:Name="RollupPreviewFence" Width="390" HorizontalAlignment="Center" VerticalAlignment="Top" Background="#DD20242A" BorderBrush="#99FFFFFF" BorderThickness="1" CornerRadius="7"
+                    <Border x:Name="RollupPreviewArea" Width="520" Height="210" HorizontalAlignment="Left" Background="#FF6D7B89" CornerRadius="7" Padding="24">
+                        <Border x:Name="RollupPreviewFence" Width="390" HorizontalAlignment="Center" VerticalAlignment="Bottom" Background="#DD20242A" BorderBrush="#99FFFFFF" BorderThickness="1" CornerRadius="7"
                                 MouseLeftButtonDown="RollupPreviewFence_MouseLeftButtonDown" MouseEnter="RollupPreviewFence_MouseEnter" MouseLeave="RollupPreviewFence_MouseLeave">
-                            <Grid><Grid.RowDefinitions><RowDefinition Height="34"/><RowDefinition x:Name="RollupPreviewContentRow" Height="82"/></Grid.RowDefinitions>
-                                <Border Background="#CC3F7FA8" CornerRadius="7,7,0,0"><TextBlock x:Name="RollupPreviewHeader" Text="Fence — click or hover to preview" Foreground="White" Margin="10,0" VerticalAlignment="Center" FontWeight="SemiBold"/></Border>
+                            <Grid x:Name="RollupPreviewGrid"><Grid.RowDefinitions><RowDefinition x:Name="RollupPreviewFirstRow" Height="34"/><RowDefinition x:Name="RollupPreviewContentRow" Height="82"/></Grid.RowDefinitions>
+                                <Border x:Name="RollupPreviewHeaderBorder" Background="#CC3F7FA8" CornerRadius="7,7,0,0"><TextBlock x:Name="RollupPreviewHeader" Text="Fence — click or hover to preview" Foreground="White" Margin="10,0" VerticalAlignment="Center" FontWeight="SemiBold"/></Border>
                                 <StackPanel x:Name="RollupPreviewContent" Grid.Row="1" Orientation="Horizontal" Margin="18,16"><TextBlock Text="📄" FontSize="30"/><TextBlock Text="📁" FontSize="30" Margin="16,0,0,0"/><TextBlock Text="🖼" FontSize="30" Margin="16,0,0,0"/></StackPanel>
                             </Grid>
                         </Border>
@@ -489,6 +505,27 @@
                         <StackPanel Grid.Column="1" Orientation="Horizontal">
                             <Border x:Name="HeaderColorSwatch" Width="34" Height="24" BorderBrush="#FF8A929C" BorderThickness="1" Margin="0,0,10,8" />
                             <Button x:Name="HeaderColorButton" Content="Choose color" Click="HeaderColorButton_Click" />
+                        </StackPanel>
+                    </Grid>
+                    <Grid Margin="0,0,0,12">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="170" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+                        <CheckBox x:Name="HeaderGradientCheckBox"
+                                  Content="Use title bar gradient"
+                                  VerticalAlignment="Center"
+                                  Click="HeaderGradientCheckBox_Click" />
+                        <StackPanel Grid.Column="1" Orientation="Horizontal">
+                            <Border x:Name="HeaderGradientColorSwatch"
+                                    Width="34"
+                                    Height="24"
+                                    BorderBrush="#FF8A929C"
+                                    BorderThickness="1"
+                                    Margin="0,0,10,8" />
+                            <Button x:Name="HeaderGradientColorButton"
+                                    Content="Choose end color"
+                                    Click="HeaderGradientColorButton_Click" />
                         </StackPanel>
                     </Grid>
                     <Grid Margin="0,0,0,14">
@@ -564,31 +601,143 @@
                 </StackPanel>
             </ScrollViewer>
 
-            <Grid x:Name="GeneralPanel" Visibility="Collapsed">
+            <Grid x:Name="HistoryPanel" Visibility="Collapsed">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="*" />
+                    <RowDefinition Height="Auto" />
+                </Grid.RowDefinitions>
+                <StackPanel>
+                    <TextBlock x:Name="HistoryTitle" Style="{StaticResource SectionTitle}" Text="操作历史" />
+                    <TextBlock x:Name="HistoryDescription" Style="{StaticResource SectionDescription}" Text="查看最近 30 天的操作并安全撤销上一步。" />
+                </StackPanel>
+                <ListBox x:Name="HistoryList" Grid.Row="1" Margin="0,8,0,16"
+                         SelectionChanged="HistoryList_SelectionChanged"
+                         BorderBrush="#FFDDE3EA" BorderThickness="1">
+                    <ListBox.ItemTemplate>
+                        <DataTemplate>
+                            <Grid Margin="12,9">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="150" />
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="90" />
+                                    <ColumnDefinition Width="110" />
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Text="{Binding DisplayTime, StringFormat={}{0:yyyy-MM-dd HH:mm}}" Foreground="#FF66717E" />
+                                <TextBlock Grid.Column="1" Text="{Binding DisplayName}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" />
+                                <TextBlock Grid.Column="2" Text="{Binding AffectedCount, StringFormat=影响 {0} 项}" Foreground="#FF66717E" />
+                                <TextBlock Grid.Column="3" Text="{Binding StatusDisplay}" Foreground="#FF66717E" />
+                            </Grid>
+                        </DataTemplate>
+                    </ListBox.ItemTemplate>
+                </ListBox>
+                <WrapPanel Grid.Row="2">
+                    <Button x:Name="UndoSelectedHistoryButton" Content="撤销选中操作" Click="UndoSelectedHistoryButton_Click" />
+                    <Button x:Name="OpenRelatedHistoryButton" Content="打开相关位置" Click="OpenRelatedHistoryButton_Click" />
+                    <Button x:Name="OpenRecycleBinButton" Content="打开回收站" Click="OpenRecycleBinButton_Click" />
+                    <Button x:Name="ClearHistoryButton" Content="清空历史" Click="ClearHistoryButton_Click" />
+                </WrapPanel>
+            </Grid>
+
+            <ScrollViewer x:Name="GeneralPanel" Visibility="Collapsed" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
                 <StackPanel>
                     <TextBlock x:Name="GeneralTitle" Style="{StaticResource SectionTitle}" Text="General" />
-                    <TextBlock x:Name="GeneralDescription" Style="{StaticResource SectionDescription}" Text="Language and Windows startup settings." />
+                    <TextBlock x:Name="GeneralDescription" Style="{StaticResource SectionDescription}" Text="Language, grid, shortcuts and Windows startup settings." />
                     <TextBlock x:Name="LanguageTitle" Style="{StaticResource GroupTitle}" Text="Language" />
                     <ComboBox x:Name="LanguageComboBox" Width="260" HorizontalAlignment="Left" SelectionChanged="LanguageComboBox_SelectionChanged" Margin="0,0,0,26">
                         <ComboBoxItem Tag="en" Content="English" />
-                        <ComboBoxItem Tag="zh-CN" Content="中文（简体）" />
+                        <ComboBoxItem Tag="zh-CN" Content="Chinese (Simplified)" />
                     </ComboBox>
                     <TextBlock x:Name="StartupTitle" Style="{StaticResource GroupTitle}" Text="Startup" />
                     <CheckBox x:Name="StartWithWindowsCheckBox" Content="Start MiniFences with Windows" FontSize="15" Click="StartWithWindowsCheckBox_Click" Margin="0,0,0,26" />
+                    <TextBlock x:Name="GridSnappingTitle" Style="{StaticResource GroupTitle}" Text="Grid snapping" />
+                    <Grid Width="520" HorizontalAlignment="Left" Margin="0,0,0,22">
+                        <Grid.ColumnDefinitions><ColumnDefinition Width="210" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
+                        <Grid.RowDefinitions><RowDefinition Height="38" /><RowDefinition Height="38" /><RowDefinition Height="38" /></Grid.RowDefinitions>
+                        <TextBlock x:Name="EnableGridSnappingLabel" Text="Enable grid snapping" VerticalAlignment="Center" />
+                        <CheckBox x:Name="EnableGridSnappingCheckBox" Grid.Column="1" VerticalAlignment="Center" Click="GridSettings_Changed" />
+                        <TextBlock x:Name="GridSizeLabel" Grid.Row="1" Text="Grid size (pixels)" VerticalAlignment="Center" />
+                        <TextBox x:Name="GridSizeTextBox" Grid.Row="1" Grid.Column="1" Width="100" HorizontalAlignment="Left" VerticalContentAlignment="Center" TextChanged="GridSizeTextBox_TextChanged" ToolTip="1-256" />
+                        <TextBlock x:Name="SnapWhileDraggingLabel" Grid.Row="2" Text="Snap while dragging" VerticalAlignment="Center" />
+                        <CheckBox x:Name="SnapWhileDraggingCheckBox" Grid.Row="2" Grid.Column="1" VerticalAlignment="Center" Click="GridSettings_Changed" />
+                    </Grid>
                     <TextBlock x:Name="ShortcutsTitle" Style="{StaticResource GroupTitle}" Text="Keyboard shortcuts" />
                     <Grid Width="520" HorizontalAlignment="Left">
                         <Grid.ColumnDefinitions><ColumnDefinition Width="170" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
-                        <Grid.RowDefinitions><RowDefinition Height="42" /><RowDefinition Height="42" /><RowDefinition Height="42" /><RowDefinition Height="44" /></Grid.RowDefinitions>
+                        <Grid.RowDefinitions><RowDefinition Height="42" /><RowDefinition Height="42" /><RowDefinition Height="42" /></Grid.RowDefinitions>
                         <TextBlock x:Name="PreviousPageHotkeyLabel" Text="Previous page" VerticalAlignment="Center" />
                         <TextBox x:Name="PreviousPageHotkeyTextBox" Grid.Column="1" VerticalContentAlignment="Center" />
                         <TextBlock x:Name="NextPageHotkeyLabel" Grid.Row="1" Text="Next page" VerticalAlignment="Center" />
                         <TextBox x:Name="NextPageHotkeyTextBox" Grid.Row="1" Grid.Column="1" VerticalContentAlignment="Center" />
                         <TextBlock x:Name="TopmostHotkeyLabel" Grid.Row="2" Text="Pin/restore Fences" VerticalAlignment="Center" />
                         <TextBox x:Name="TopmostHotkeyTextBox" Grid.Row="2" Grid.Column="1" VerticalContentAlignment="Center" />
-                        <Button x:Name="ApplyHotkeysButton" Grid.Row="3" Grid.Column="1" Content="Apply shortcuts" HorizontalAlignment="Left" Click="ApplyHotkeysButton_Click" />
                     </Grid>
+                    <TextBlock x:Name="DirectPageHotkeysTitle" Style="{StaticResource GroupTitle}" Text="Direct page shortcuts" Margin="0,18,0,8" />
+                    <UniformGrid Columns="2" Width="520" HorizontalAlignment="Left">
+                        <Grid Width="250" Height="38">
+                            <Grid.ColumnDefinitions><ColumnDefinition Width="90" /><ColumnDefinition Width="150" /></Grid.ColumnDefinitions>
+                            <TextBlock x:Name="DirectPage1HotkeyLabel" Text="Page 1" VerticalAlignment="Center" />
+                            <TextBox x:Name="DirectPage1HotkeyTextBox" Grid.Column="1" VerticalContentAlignment="Center" />
+                        </Grid>
+                        <Grid Width="250" Height="38">
+                            <Grid.ColumnDefinitions><ColumnDefinition Width="90" /><ColumnDefinition Width="150" /></Grid.ColumnDefinitions>
+                            <TextBlock x:Name="DirectPage2HotkeyLabel" Text="Page 2" VerticalAlignment="Center" />
+                            <TextBox x:Name="DirectPage2HotkeyTextBox" Grid.Column="1" VerticalContentAlignment="Center" />
+                        </Grid>
+                        <Grid Width="250" Height="38">
+                            <Grid.ColumnDefinitions><ColumnDefinition Width="90" /><ColumnDefinition Width="150" /></Grid.ColumnDefinitions>
+                            <TextBlock x:Name="DirectPage3HotkeyLabel" Text="Page 3" VerticalAlignment="Center" />
+                            <TextBox x:Name="DirectPage3HotkeyTextBox" Grid.Column="1" VerticalContentAlignment="Center" />
+                        </Grid>
+                        <Grid Width="250" Height="38">
+                            <Grid.ColumnDefinitions><ColumnDefinition Width="90" /><ColumnDefinition Width="150" /></Grid.ColumnDefinitions>
+                            <TextBlock x:Name="DirectPage4HotkeyLabel" Text="Page 4" VerticalAlignment="Center" />
+                            <TextBox x:Name="DirectPage4HotkeyTextBox" Grid.Column="1" VerticalContentAlignment="Center" />
+                        </Grid>
+                        <Grid Width="250" Height="38">
+                            <Grid.ColumnDefinitions><ColumnDefinition Width="90" /><ColumnDefinition Width="150" /></Grid.ColumnDefinitions>
+                            <TextBlock x:Name="DirectPage5HotkeyLabel" Text="Page 5" VerticalAlignment="Center" />
+                            <TextBox x:Name="DirectPage5HotkeyTextBox" Grid.Column="1" VerticalContentAlignment="Center" />
+                        </Grid>
+                        <Grid Width="250" Height="38">
+                            <Grid.ColumnDefinitions><ColumnDefinition Width="90" /><ColumnDefinition Width="150" /></Grid.ColumnDefinitions>
+                            <TextBlock x:Name="DirectPage6HotkeyLabel" Text="Page 6" VerticalAlignment="Center" />
+                            <TextBox x:Name="DirectPage6HotkeyTextBox" Grid.Column="1" VerticalContentAlignment="Center" />
+                        </Grid>
+                        <Grid Width="250" Height="38">
+                            <Grid.ColumnDefinitions><ColumnDefinition Width="90" /><ColumnDefinition Width="150" /></Grid.ColumnDefinitions>
+                            <TextBlock x:Name="DirectPage7HotkeyLabel" Text="Page 7" VerticalAlignment="Center" />
+                            <TextBox x:Name="DirectPage7HotkeyTextBox" Grid.Column="1" VerticalContentAlignment="Center" />
+                        </Grid>
+                        <Grid Width="250" Height="38">
+                            <Grid.ColumnDefinitions><ColumnDefinition Width="90" /><ColumnDefinition Width="150" /></Grid.ColumnDefinitions>
+                            <TextBlock x:Name="DirectPage8HotkeyLabel" Text="Page 8" VerticalAlignment="Center" />
+                            <TextBox x:Name="DirectPage8HotkeyTextBox" Grid.Column="1" VerticalContentAlignment="Center" />
+                        </Grid>
+                        <Grid Width="250" Height="38">
+                            <Grid.ColumnDefinitions><ColumnDefinition Width="90" /><ColumnDefinition Width="150" /></Grid.ColumnDefinitions>
+                            <TextBlock x:Name="DirectPage9HotkeyLabel" Text="Page 9" VerticalAlignment="Center" />
+                            <TextBox x:Name="DirectPage9HotkeyTextBox" Grid.Column="1" VerticalContentAlignment="Center" />
+                        </Grid>
+                        <Grid Width="250" Height="38">
+                            <Grid.ColumnDefinitions><ColumnDefinition Width="90" /><ColumnDefinition Width="150" /></Grid.ColumnDefinitions>
+                            <TextBlock x:Name="DirectPage10HotkeyLabel" Text="Page 10" VerticalAlignment="Center" />
+                            <TextBox x:Name="DirectPage10HotkeyTextBox" Grid.Column="1" VerticalContentAlignment="Center" />
+                        </Grid>
+                        <Grid Width="250" Height="38">
+                            <Grid.ColumnDefinitions><ColumnDefinition Width="90" /><ColumnDefinition Width="150" /></Grid.ColumnDefinitions>
+                            <TextBlock x:Name="DirectPage11HotkeyLabel" Text="Page 11" VerticalAlignment="Center" />
+                            <TextBox x:Name="DirectPage11HotkeyTextBox" Grid.Column="1" VerticalContentAlignment="Center" />
+                        </Grid>
+                        <Grid Width="250" Height="38">
+                            <Grid.ColumnDefinitions><ColumnDefinition Width="90" /><ColumnDefinition Width="150" /></Grid.ColumnDefinitions>
+                            <TextBlock x:Name="DirectPage12HotkeyLabel" Text="Page 12" VerticalAlignment="Center" />
+                            <TextBox x:Name="DirectPage12HotkeyTextBox" Grid.Column="1" VerticalContentAlignment="Center" />
+                        </Grid>
+                    </UniformGrid>
+                    <Button x:Name="ApplyHotkeysButton" Content="Apply shortcuts" HorizontalAlignment="Left" Click="ApplyHotkeysButton_Click" Margin="0,10,0,24" />
                 </StackPanel>
-            </Grid>
+            </ScrollViewer>
 
             <Grid x:Name="AboutPanel" Visibility="Collapsed">
                 <StackPanel>
