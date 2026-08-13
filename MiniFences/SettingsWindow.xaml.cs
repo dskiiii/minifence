@@ -36,6 +36,7 @@ public partial class SettingsWindow : Window
         };
         Activated += (_, _) =>
         {
+            _mainWindow.CancelActiveRenamesForSettings();
             if (_hasLoaded && DateTime.UtcNow - _lastReloadUtc > TimeSpan.FromSeconds(1)) ReloadState();
         };
     }
@@ -114,9 +115,8 @@ public partial class SettingsWindow : Window
                 ? _mainWindow.Localization.T("Hidden")
                 : _mainWindow.Localization.T("Visible");
             CurrentPageValue.Text = $"{_mainWindow.Localization.T("Page")} {_mainWindow.SettingsCurrentPage + 1} / {_mainWindow.SettingsPageCount}";
-            WelcomeToggleButton.Content = _mainWindow.IsDesktopIconIntegrationEnabled
-                ? _mainWindow.Localization.T("DisableMiniFences")
-                : _mainWindow.Localization.T("EnableMiniFences");
+            WelcomeToggleButton.Content = _mainWindow.Localization.T(
+                GetWelcomeVisibilityActionKey(_mainWindow.IsMiniFencesEnabled));
             WelcomeTopmostButton.Content = _mainWindow.AreFencesTopmost
                 ? _mainWindow.Localization.T("RestoreFencesToDesktop")
                 : _mainWindow.Localization.T("PinFencesOnTop");
@@ -199,6 +199,10 @@ public partial class SettingsWindow : Window
         var loc = _mainWindow.Localization;
         Title = loc.T("SettingsWindowTitle");
         SettingsCaptionText.Text = loc.T("Settings");
+        var currentVersion = typeof(SettingsWindow).Assembly.GetName().Version?.ToString(3) ?? "Unknown";
+        SidebarVersionText.Text = loc.Language == LocalizationService.Chinese
+            ? $"版本 {currentVersion}"
+            : $"Version {currentVersion}";
         WelcomeNav.Content = loc.T("Welcome");
         FencesNav.Content = loc.T("FencesNav");
         PagesNav.Content = loc.T("PagesNav");
@@ -369,7 +373,7 @@ public partial class SettingsWindow : Window
 
         AboutTitle.Text = loc.T("About");
         AboutDescription.Text = loc.T("AboutDescription");
-        VersionText.Text = $"MiniFences {typeof(SettingsWindow).Assembly.GetName().Version?.ToString(3) ?? "0.20.8"}";
+        VersionText.Text = $"MiniFences {currentVersion}";
         OpenConfigButton.Content = loc.T("OpenConfigFolder");
         OpenLogButton.Content = loc.T("OpenLogFile");
     }
@@ -796,14 +800,33 @@ public partial class SettingsWindow : Window
 
     private void RefreshButton_Click(object sender, RoutedEventArgs e)
     {
-        _mainWindow.SettingsRefreshAll();
-        ReloadState();
+        try
+        {
+            AppLogger.Log("Settings Refresh All button clicked.");
+            _mainWindow.SettingsRefreshAll();
+            ReloadState();
+        }
+        catch (Exception ex)
+        {
+            AppLogger.LogException("Settings Refresh All failed", ex);
+            System.Windows.MessageBox.Show(this, ex.Message, "MiniFences", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
     }
 
     private void WelcomeIntegrationButton_Click(object sender, RoutedEventArgs e)
     {
-        _mainWindow.SettingsSetDesktopIconIntegration(!_mainWindow.IsDesktopIconIntegrationEnabled);
-        ReloadState();
+        try
+        {
+            var enabled = !_mainWindow.IsMiniFencesEnabled;
+            AppLogger.Log($"Settings Open/Close Fences button clicked. RequestedEnabled={enabled}.");
+            _mainWindow.SettingsSetMiniFencesEnabled(enabled);
+            ReloadState();
+        }
+        catch (Exception ex)
+        {
+            AppLogger.LogException("Settings Open/Close Fences failed", ex);
+            System.Windows.MessageBox.Show(this, ex.Message, "MiniFences", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
     }
 
     private void TopmostButton_Click(object sender, RoutedEventArgs e)
@@ -1119,13 +1142,16 @@ public partial class SettingsWindow : Window
 
     private void ShowFencesCheckBox_Click(object sender, RoutedEventArgs e)
     {
-        if (!_updatingControls && ShowFencesCheckBox.IsChecked == _mainWindow.AreFencesHidden)
+        if (!_updatingControls)
         {
-            _mainWindow.SettingsToggleFences();
+            _mainWindow.SettingsSetFencesVisible(ShowFencesCheckBox.IsChecked == true);
             ReloadState();
         }
         UpdateDisplayPreview();
     }
+
+    internal static string GetWelcomeVisibilityActionKey(bool allFencesVisible) =>
+        allFencesVisible ? "DisableMiniFences" : "EnableMiniFences";
 
     private void DesktopDoubleClickCheckBox_Click(object sender, RoutedEventArgs e)
     {

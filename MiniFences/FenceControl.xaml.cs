@@ -7,6 +7,7 @@ using System.Windows.Media.Effects;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
 using System.Windows.Input;
+using System.Windows.Interop;
 using System.Windows.Threading;
 using MiniFences.Models;
 using MiniFences.Services;
@@ -16,8 +17,12 @@ namespace MiniFences;
 
 public partial class FenceControl : System.Windows.Controls.UserControl
 {
+    private const string TabFenceIdFormat = "MiniFences.TabFenceId";
+    private const string TabPreviewContextFormat = "MiniFences.TabDragPreviewContext";
+    private const string TabIndexFormat = "MiniFences.TabIndex";
     private const double ExpandedMinHeight = 180;
     internal const double CollapsedHeight = 34;
+    private const double ResizeHandleRevealDistance = 32;
     private static FenceAppearance? _copiedStyle;
     private readonly FolderItemService _folderItemService = new();
     private readonly ShellContextMenuService _shellContextMenuService = new();
@@ -50,12 +55,17 @@ public partial class FenceControl : System.Windows.Controls.UserControl
     private bool _shiftHeaderDrag;
     private string? _headerDragDockEdge;
     private bool _wasItemSelectedBeforeLeftDown;
+    private ModifierKeys _itemModifiersOnLeftDown;
+    private ModifierKeys _expandedLabelModifiersOnLeftDown;
     private DispatcherTimer? _inlineRenameTimer;
     private FolderItem? _inlineRenameItem;
     private TextBlock? _inlineRenameLabel;
     private System.Windows.Controls.TextBox? _inlineRenameTextBox;
     private bool _isCommittingInlineRename;
     private bool _ignoreExpandedLabelMouseUp;
+    private DesktopRenameWindow? _inlineRenameWindow;
+    private bool _dropOperationInProgress;
+    private bool _dragHighlightActive;
     private CancellationTokenSource? _iconLoadCancellation;
     private readonly Stack<string> _portalBackHistory = new();
     private IReadOnlyList<FenceConfig>? _tabConfigs;
@@ -85,6 +95,7 @@ public partial class FenceControl : System.Windows.Controls.UserControl
     public event EventHandler? HeaderDragMoved;
     public event EventHandler? HeaderDragCanceled;
     public event EventHandler? ItemSelectionRequested;
+    public event Action<string, string>? ItemRenamed;
 
     public FenceConfig Config { get; }
     public bool SnapToGrid { get; set; }
@@ -131,6 +142,11 @@ public partial class FenceControl : System.Windows.Controls.UserControl
     internal bool IsResizeHandleAtTopForTesting => ResizeThumb.VerticalAlignment == VerticalAlignment.Top;
     internal string ResizeGripOrientationForTesting => ResizeThumb.Tag?.ToString() ?? "";
     internal bool IsManipulationLockedForTesting => Config.IsLocked;
+    internal static bool IsNearResizeHandle(System.Windows.Point pointer, double width, double height, bool handleAtTop) =>
+        pointer.X >= Math.Max(0, width - ResizeHandleRevealDistance) &&
+        (handleAtTop
+            ? pointer.Y <= ResizeHandleRevealDistance
+            : pointer.Y >= Math.Max(0, height - ResizeHandleRevealDistance));
     internal bool IsTabNavigationVisibleForTesting => TabNavigationPanel.Visibility == Visibility.Visible;
     internal Window CreateTabDragPreviewForTesting() => CreateTabDragPreview(0);
     internal bool HasFolderWatcherForTesting => _folderWatcher != null;
@@ -144,7 +160,45 @@ public partial class FenceControl : System.Windows.Controls.UserControl
             .OfType<TextBlock>()
             .All(text => text.HorizontalAlignment == System.Windows.HorizontalAlignment.Stretch &&
                          text.TextAlignment == TextAlignment.Center);
+    internal CornerRadius FirstTabCornerRadiusForTesting =>
+        TabStripPanel.Children.OfType<Border>()
+            .FirstOrDefault(tab => tab.Visibility == Visibility.Visible)?.CornerRadius ?? new CornerRadius();
     internal int SelectedItemCountForTesting => ItemsList.SelectedItems.Count;
+    internal bool IsDragHighlightedForTesting => _dragHighlightActive;
+    internal bool HasIndependentRenameWindow => _inlineRenameWindow is { IsVisible: true };
+    internal void CancelActiveRenameForSettings()
+    {
+        CancelPendingInlineRename();
+        if (_inlineRenameItem != null) EndInlineRename();
+    }
+    internal bool IsListViewModeForTesting =>
+        string.Equals(Config.PortalViewMode, "List", StringComparison.OrdinalIgnoreCase) &&
+        ReferenceEquals(ItemsList.ItemTemplate, ItemsList.Resources["PortalListItemTemplate"]);
+    internal bool ListTemplateContainsIconsForTesting =>
+        ((DataTemplate)ItemsList.Resources["PortalListItemTemplate"]).LoadContent() is DependencyObject root &&
+        FindVisualChild<System.Windows.Controls.Image>(root) != null;
+    internal void ApplyPortalViewForTesting() => ApplyPortalView();
+    internal static (double PanelWidth, double PanelHeight, double ContainerWidth, double ContainerHeight)
+        GetPortalItemLayout(bool listMode, double availableWidth, double iconSize, double spacing)
+    {
+        spacing = Math.Clamp(spacing, 0, 16);
+        var containerWidth = listMode ? Math.Max(120, availableWidth - 12 - spacing * 2) : iconSize + 44;
+        var containerHeight = listMode ? 30 : iconSize + 58;
+        return (
+            listMode ? Math.Max(120, availableWidth - 8) : containerWidth + spacing * 2,
+            containerHeight + spacing * 2,
+            containerWidth,
+            containerHeight);
+    }
+    internal void SelectViewModeForTesting(string mode)
+    {
+        SetPortalViewMode(mode);
+    }
+    internal bool IsRenameSelectionChromeHiddenForTesting =>
+        _inlineRenameItem != null && ExpandedItemLabelOverlay.Background == System.Windows.Media.Brushes.Transparent;
+    internal bool IsExpandedOverlayHiddenForTesting => ExpandedItemLabelOverlay.Visibility != Visibility.Visible;
+    internal bool IsEmbeddedRenameEditorVisibleForTesting => ExpandedItemRenameTextBox.Visibility == Visibility.Visible;
+    internal void SetDragHighlightedForTesting() => SetDragHighlight();
     internal void SetHoverExpandedForTesting(bool expanded) => SetHoverExpanded(expanded);
     internal void SetHoverExpandedFromDesktopHost(bool expanded) => SetHoverExpanded(expanded);
 
@@ -201,6 +255,12 @@ public partial class FenceControl : System.Windows.Controls.UserControl
         SortCreatedMenuItem.Header = _loc.T("SortCreated");
         SortCategoryMenuItem.Header = _loc.T("SortCategory");
         var chinese = string.Equals(_loc.Language, LocalizationService.Chinese, StringComparison.OrdinalIgnoreCase);
+        PortalSmallIconsMenuItem.Header = chinese ? "小图标" : "Small icons";
+        PortalMediumIconsMenuItem.Header = chinese ? "中等图标" : "Medium icons";
+        PortalLargeIconsMenuItem.Header = chinese ? "大图标" : "Large icons";
+        PortalCompactSpacingMenuItem.Header = chinese ? "紧凑间距" : "Compact spacing";
+        PortalComfortableSpacingMenuItem.Header = chinese ? "舒适间距" : "Comfortable spacing";
+        PortalSpaciousSpacingMenuItem.Header = chinese ? "宽松间距" : "Spacious spacing";
         PortalViewMenuItem.Header = chinese ? "视图" : "View";
         PortalIconsViewMenuItem.Header = chinese ? "图标" : "Icons";
         PortalListViewMenuItem.Header = chinese ? "列表" : "List";
@@ -279,14 +339,14 @@ public partial class FenceControl : System.Windows.Controls.UserControl
             tab.PreviewMouseMove += (_, e) =>
             {
                 if (e.LeftButton != MouseButtonState.Pressed || !IsTabDetachGestureActive()) return;
-                var data = new System.Windows.DataObject("MiniFences.TabIndex", selectedIndex);
+                var data = new System.Windows.DataObject(TabIndexFormat, selectedIndex);
                 var sourceFenceId = _tabConfigs != null && selectedIndex < _tabConfigs.Count
                     ? _tabConfigs[selectedIndex].Id
                     : Config.Id;
-                data.SetData("MiniFences.TabFenceId", sourceFenceId);
+                data.SetData(TabFenceIdFormat, sourceFenceId);
                 var dragPreview = CreateTabDragPreview(selectedIndex);
                 var dragPreviewContext = new TabDragPreviewContext(dragPreview, (FenceControl)dragPreview.Content);
-                data.SetData("MiniFences.TabDragPreviewContext", dragPreviewContext);
+                data.SetData(TabPreviewContextFormat, dragPreviewContext);
                 var dropPoint = Forms.Cursor.Position;
                 System.Windows.GiveFeedbackEventHandler followPreview = (_, _) => PositionTabDragPreview(dragPreview);
                 var previewFollowTimer = new DispatcherTimer(DispatcherPriority.Send)
@@ -327,26 +387,26 @@ public partial class FenceControl : System.Windows.Controls.UserControl
             };
             tab.DragOver += (_, e) =>
             {
-                var sourceFenceId = e.Data.GetData("MiniFences.TabFenceId") as string;
+                var sourceFenceId = DesktopDragData.GetCachedData(e.Data, TabFenceIdFormat) as string;
                 var belongsToThisGroup = sourceFenceId != null && _tabConfigs?.Any(config =>
                     string.Equals(config.Id, sourceFenceId, StringComparison.OrdinalIgnoreCase)) == true;
                 var inMergeZone = IsTabMergeDropPoint(e.GetPosition(this));
                 var canMergeOrReturn = sourceFenceId != null && inMergeZone &&
                                        (belongsToThisGroup || CanAcceptTabMerge(sourceFenceId));
                 var canReorder = belongsToThisGroup &&
-                                 e.Data.GetData("MiniFences.TabIndex") is int fromIndex && fromIndex != selectedIndex;
+                                 DesktopDragData.GetCachedData(e.Data, TabIndexFormat) is int fromIndex && fromIndex != selectedIndex;
                 e.Effects = IsTabDetachGestureActive() && (canMergeOrReturn || canReorder)
                     ? System.Windows.DragDropEffects.Move
                     : System.Windows.DragDropEffects.None;
-                if (e.Data.GetData("MiniFences.TabDragPreviewContext") is TabDragPreviewContext previewContext)
+                if (DesktopDragData.GetCachedData(e.Data, TabPreviewContextFormat) is TabDragPreviewContext previewContext)
                     previewContext.SetMergePreview(canMergeOrReturn, ActualWidth / 3);
                 e.Handled = true;
             };
             tab.Drop += (_, e) =>
             {
-                if (e.Data.GetData("MiniFences.TabDragPreviewContext") is TabDragPreviewContext previewContext)
+                if (DesktopDragData.GetCachedData(e.Data, TabPreviewContextFormat) is TabDragPreviewContext previewContext)
                     previewContext.SetMergePreview(false, 0);
-                var sourceFenceId = e.Data.GetData("MiniFences.TabFenceId") as string;
+                var sourceFenceId = DesktopDragData.GetCachedData(e.Data, TabFenceIdFormat) as string;
                 var belongsToThisGroup = sourceFenceId != null && _tabConfigs?.Any(config =>
                     string.Equals(config.Id, sourceFenceId, StringComparison.OrdinalIgnoreCase)) == true;
                 if (IsTabDetachGestureActive() && sourceFenceId != null && !belongsToThisGroup &&
@@ -356,7 +416,7 @@ public partial class FenceControl : System.Windows.Controls.UserControl
                     e.Effects = System.Windows.DragDropEffects.Move;
                 }
                 else if (IsTabDetachGestureActive() && belongsToThisGroup &&
-                         e.Data.GetData("MiniFences.TabIndex") is int fromIndex &&
+                         DesktopDragData.GetCachedData(e.Data, TabIndexFormat) is int fromIndex &&
                          (fromIndex != selectedIndex || IsTabMergeDropPoint(e.GetPosition(this))))
                 {
                     if (fromIndex != selectedIndex) TabReorderRequested?.Invoke(fromIndex, selectedIndex);
@@ -372,6 +432,34 @@ public partial class FenceControl : System.Windows.Controls.UserControl
             if (hoverSwitch) tab.MouseEnter += (_, _) => TabSelectedRequested?.Invoke(selectedIndex);
             Grid.SetColumn(tab, selectedIndex);
             TabStripPanel.Children.Add(tab);
+        }
+        UpdateTabStripCornerRadii(UsesBottomTitleLayout());
+    }
+
+    private void UpdateTabStripCornerRadii(bool bottomDocked)
+    {
+        var allTabs = TabStripPanel.Children.OfType<Border>().ToArray();
+        foreach (var tab in allTabs) tab.CornerRadius = new CornerRadius();
+        var tabs = allTabs.Where(tab => tab.Visibility == Visibility.Visible).ToArray();
+        if (tabs.Length == 0) return;
+
+        tabs[0].CornerRadius = bottomDocked
+            ? new CornerRadius(0, 0, 0, 8)
+            : new CornerRadius(8, 0, 0, 0);
+        var visibleTabsFillStrip = TabStripPanel.ColumnDefinitions.Count == allTabs.Length ||
+                                   TabStripPanel.ColumnDefinitions.LastOrDefault()?.Width.Value == 0;
+        if (visibleTabsFillStrip)
+        {
+            if (tabs.Length == 1)
+            {
+                tabs[0].CornerRadius = bottomDocked
+                    ? new CornerRadius(0, 0, 8, 8)
+                    : new CornerRadius(8, 8, 0, 0);
+                return;
+            }
+            tabs[^1].CornerRadius = bottomDocked
+                ? new CornerRadius(0, 0, 8, 0)
+                : new CornerRadius(0, 8, 0, 0);
         }
     }
 
@@ -392,6 +480,7 @@ public partial class FenceControl : System.Windows.Controls.UserControl
 
         if (hiddenIndex < TabStripPanel.ColumnDefinitions.Count)
             TabStripPanel.ColumnDefinitions[hiddenIndex].Width = new GridLength(0);
+        UpdateTabStripCornerRadii(UsesBottomTitleLayout());
     }
 
     private Window CreateTabDragPreview(int tabIndex)
@@ -538,7 +627,8 @@ public partial class FenceControl : System.Windows.Controls.UserControl
             StopFolderWatcher();
             _lastLoadError = null;
             ItemsList.ItemsSource = ApplySort(existingItems);
-            BeginAsyncIconLoad(ItemsList.ItemsSource.Cast<FolderItem>().ToArray());
+            if (!IsListMode()) BeginAsyncIconLoad(ItemsList.ItemsSource.Cast<FolderItem>().ToArray());
+            ApplyPortalView();
             AppLogger.Log($"Loading desktop group '{Config.Title}' with {existingItems.Count} assigned item(s).");
             UpdateStatusText();
             if (!previousPaths.SequenceEqual(Config.AssignedPaths, StringComparer.OrdinalIgnoreCase)) Changed?.Invoke(this, EventArgs.Empty);
@@ -582,7 +672,7 @@ public partial class FenceControl : System.Windows.Controls.UserControl
 
         _lastLoadError = null;
         ItemsList.ItemsSource = ApplySort(items);
-        BeginAsyncIconLoad(ItemsList.ItemsSource.Cast<FolderItem>().ToArray());
+        if (!IsListMode()) BeginAsyncIconLoad(ItemsList.ItemsSource.Cast<FolderItem>().ToArray());
         ApplyPortalView();
         UpdatePortalNavigation();
         UpdateStatusText();
@@ -686,15 +776,37 @@ public partial class FenceControl : System.Windows.Controls.UserControl
 
     private void PortalViewMenuItem_Click(object sender, RoutedEventArgs e)
     {
-        if (sender is not MenuItem { Tag: string mode } || Config.IsDesktopGroup) return;
+        if (sender is not MenuItem { Tag: string mode }) return;
+        SetPortalViewMode(mode);
+    }
+
+    private void PortalViewMenuItem_PreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+    {
+        if (sender is not MenuItem { Tag: string mode }) return;
+        SetPortalViewMode(mode);
+        FenceContextMenu.IsOpen = false;
+        e.Handled = true;
+    }
+
+    private void SetPortalViewMode(string mode)
+    {
+        var wasListMode = IsListMode();
         Config.PortalViewMode = mode;
+        AppLogger.Log($"Fence '{Config.Title}' view mode changed to {Config.PortalViewMode}.");
         ApplyPortalView();
+        if (wasListMode && !IsListMode() && ItemsList.ItemsSource is not null)
+        {
+            // List mode intentionally skips shell icon extraction. Switching
+            // back must populate the existing items immediately instead of
+            // leaving every file with the generic placeholder.
+            BeginAsyncIconLoad(ItemsList.ItemsSource.Cast<FolderItem>().ToArray());
+        }
         Changed?.Invoke(this, EventArgs.Empty);
     }
 
     private void PortalIconSizeMenuItem_Click(object sender, RoutedEventArgs e)
     {
-        if (sender is not MenuItem { Tag: string value } || !double.TryParse(value, out var size) || Config.IsDesktopGroup) return;
+        if (sender is not MenuItem { Tag: string value } || !double.TryParse(value, out var size)) return;
         Config.PortalIconSize = Math.Clamp(size, 24, 72);
         ApplyPortalView();
         Changed?.Invoke(this, EventArgs.Empty);
@@ -702,7 +814,7 @@ public partial class FenceControl : System.Windows.Controls.UserControl
 
     private void PortalSpacingMenuItem_Click(object sender, RoutedEventArgs e)
     {
-        if (sender is not MenuItem { Tag: string value } || !double.TryParse(value, out var spacing) || Config.IsDesktopGroup) return;
+        if (sender is not MenuItem { Tag: string value } || !double.TryParse(value, out var spacing)) return;
         Config.PortalItemSpacing = Math.Clamp(spacing, 0, 16);
         ApplyPortalView();
         Changed?.Invoke(this, EventArgs.Empty);
@@ -710,8 +822,7 @@ public partial class FenceControl : System.Windows.Controls.UserControl
 
     private void ApplyPortalView()
     {
-        if (Config.IsDesktopGroup) return;
-        var listMode = string.Equals(Config.PortalViewMode, "List", StringComparison.OrdinalIgnoreCase);
+        var listMode = IsListMode();
         ItemsList.ItemTemplate = listMode
             ? (DataTemplate)ItemsList.Resources["PortalListItemTemplate"]
             : _iconItemTemplate;
@@ -719,22 +830,28 @@ public partial class FenceControl : System.Windows.Controls.UserControl
         PortalListViewMenuItem.IsChecked = listMode;
         Dispatcher.BeginInvoke(() =>
         {
+            var layout = GetPortalItemLayout(listMode, ItemsList.ActualWidth, Config.PortalIconSize, Config.PortalItemSpacing);
             if (FindVisualChild<Controls.VirtualizingWrapPanel>(ItemsList) is { } panel)
             {
-                panel.ItemWidth = listMode ? Math.Max(120, ItemsList.ActualWidth - 8) : Config.PortalIconSize + 52;
-                panel.ItemHeight = listMode ? 66 : Config.PortalIconSize + 66;
+                panel.ItemWidth = layout.PanelWidth;
+                panel.ItemHeight = layout.PanelHeight;
             }
             for (var index = 0; index < ItemsList.Items.Count; index++)
             {
                 if (ItemsList.ItemContainerGenerator.ContainerFromIndex(index) is not System.Windows.Controls.ListViewItem container) continue;
-                container.Width = listMode ? Math.Max(120, ItemsList.ActualWidth - 12) : Config.PortalIconSize + 44;
-                container.Height = listMode ? 58 : Config.PortalIconSize + 58;
+                container.Width = layout.ContainerWidth;
+                container.Height = layout.ContainerHeight;
                 container.Margin = new Thickness(Config.PortalItemSpacing);
+                container.Tag = listMode ? "List" : "Icons";
             }
-            foreach (var image in FindVisualChildren<System.Windows.Controls.Image>(ItemsList))
-                image.Width = image.Height = listMode ? 32 : Config.PortalIconSize;
+            if (!listMode)
+                foreach (var image in FindVisualChildren<System.Windows.Controls.Image>(ItemsList))
+                    image.Width = image.Height = Config.PortalIconSize;
         }, DispatcherPriority.Loaded);
     }
+
+    private bool IsListMode() =>
+        string.Equals(Config.PortalViewMode, "List", StringComparison.OrdinalIgnoreCase);
 
     private void BeginAsyncIconLoad(IReadOnlyList<FolderItem> items)
     {
@@ -1073,7 +1190,7 @@ public partial class FenceControl : System.Windows.Controls.UserControl
     {
         _isResizing = false;
         _resizeFromTop = false;
-        ResizeThumb.Visibility = IsMouseOver && !IsVisuallyCollapsed ? Visibility.Visible : Visibility.Collapsed;
+        UpdateResizeHandleVisibility(Mouse.GetPosition(this));
     }
 
     private void ItemsList_PreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
@@ -1155,29 +1272,64 @@ public partial class FenceControl : System.Windows.Controls.UserControl
 
     private void UpdateExpandedItemLabelOverlay()
     {
-        var item = ItemsList.SelectedItem as FolderItem ?? ItemsList.SelectedItems.OfType<FolderItem>().LastOrDefault();
-        if (item == null ||
+        if (IsListMode())
+        {
+            SetCompactItemNameVisibility(null);
+            ExpandedItemLabelOverlay.Visibility = Visibility.Collapsed;
+            return;
+        }
+        var selectedItems = ItemsList.SelectedItems.OfType<FolderItem>().ToArray();
+        if (!ShouldShowExpandedSelectionLabel(selectedItems.Length) ||
+            selectedItems[0] is not { } item ||
             ItemsList.ItemContainerGenerator.ContainerFromItem(item) is not System.Windows.Controls.ListViewItem container)
         {
+            SetCompactItemNameVisibility(null);
             ExpandedItemLabelOverlay.Visibility = Visibility.Collapsed;
             return;
         }
 
         try
         {
-            var point = container.TranslatePoint(new System.Windows.Point(0, 56), ItemLabelOverlayCanvas);
-            Canvas.SetLeft(ExpandedItemLabelOverlay, point.X);
+            var point = container.TranslatePoint(new System.Windows.Point(0, 0), ItemLabelOverlayCanvas);
+            var centeredLeft = point.X - (ExpandedItemLabelOverlay.Width - container.ActualWidth) / 2;
+            var maximumLeft = Math.Max(0, ItemLabelOverlayCanvas.ActualWidth - ExpandedItemLabelOverlay.Width);
+            Canvas.SetLeft(ExpandedItemLabelOverlay, Math.Clamp(centeredLeft, 0, maximumLeft));
             Canvas.SetTop(ExpandedItemLabelOverlay, point.Y);
             ExpandedItemLabelOverlay.DataContext = item;
-            ExpandedItemLabelText.Text = item.Name;
+            ExpandedItemLabelText.Text = DesktopIconLabelConverter.FormatAllLines(item.Name, 78);
+            ExpandedItemLabelText.Measure(new System.Windows.Size(78, double.PositiveInfinity));
+            ExpandedItemLabelOverlay.Height = Math.Max(92, 60 + ExpandedItemLabelText.DesiredSize.Height);
             var isRenamingThisItem = ReferenceEquals(_inlineRenameItem, item);
+            // The expanded tile is visual-only. Let pointer input pass through
+            // to the real virtualized item cells so a tall selected label can
+            // never block selecting or dragging the icon below it. Re-enable
+            // input only while its rename editor is open.
+            ExpandedItemLabelOverlay.IsHitTestVisible = isRenamingThisItem;
             ExpandedItemLabelText.Visibility = isRenamingThisItem ? Visibility.Collapsed : Visibility.Visible;
-            ExpandedItemRenameTextBox.Visibility = isRenamingThisItem ? Visibility.Visible : Visibility.Collapsed;
+            // When the independent top-level editor exists, the embedded
+            // TextBox must remain hidden. Re-showing it here produces the
+            // smaller blue rectangle seen inside the real rename editor.
+            ExpandedItemRenameTextBox.Visibility = isRenamingThisItem && _inlineRenameWindow == null
+                ? Visibility.Visible
+                : Visibility.Collapsed;
+            SetCompactItemNameVisibility(item);
             ExpandedItemLabelOverlay.Visibility = Visibility.Visible;
         }
         catch
         {
+            SetCompactItemNameVisibility(null);
             ExpandedItemLabelOverlay.Visibility = Visibility.Collapsed;
+        }
+    }
+
+    private void SetCompactItemNameVisibility(FolderItem? expandedItem)
+    {
+        foreach (var text in FindVisualChildren<TextBlock>(ItemsList)
+                     .Where(candidate => string.Equals(candidate.Name, "CompactItemName", StringComparison.Ordinal)))
+        {
+            text.Visibility = expandedItem != null && ReferenceEquals(text.DataContext, expandedItem)
+                ? Visibility.Hidden
+                : Visibility.Visible;
         }
     }
 
@@ -1213,10 +1365,11 @@ public partial class FenceControl : System.Windows.Controls.UserControl
 
         ItemSelectionRequested?.Invoke(this, EventArgs.Empty);
         _wasItemSelectedBeforeLeftDown = container.IsSelected;
+        _itemModifiersOnLeftDown = Keyboard.Modifiers;
         _pendingDragItem = item;
         _pendingDragStart = e.GetPosition(this);
         var itemIndex = ItemsList.ItemContainerGenerator.IndexFromContainer(container);
-        if ((Keyboard.Modifiers & ModifierKeys.Control) != 0)
+        if ((_itemModifiersOnLeftDown & ModifierKeys.Control) != 0)
         {
             container.IsSelected = !container.IsSelected;
             _selectionAnchorIndex = itemIndex;
@@ -1225,7 +1378,7 @@ public partial class FenceControl : System.Windows.Controls.UserControl
             return;
         }
 
-        if ((Keyboard.Modifiers & ModifierKeys.Shift) != 0 && _selectionAnchorIndex >= 0)
+        if ((_itemModifiersOnLeftDown & ModifierKeys.Shift) != 0 && _selectionAnchorIndex >= 0)
         {
             var first = Math.Min(_selectionAnchorIndex, itemIndex);
             var last = Math.Max(_selectionAnchorIndex, itemIndex);
@@ -1252,10 +1405,12 @@ public partial class FenceControl : System.Windows.Controls.UserControl
 
     private void Item_PreviewMouseLeftButtonUp(object sender, MouseButtonEventArgs e)
     {
-        if (e.OriginalSource is DependencyObject source &&
-            FindVisualParent<TextBlock>(source) is { DataContext: FolderItem labelItem } label &&
-            _wasItemSelectedBeforeLeftDown &&
-            ItemsList.SelectedItems.Contains(labelItem))
+        if (sender is System.Windows.Controls.ListViewItem { DataContext: FolderItem labelItem } labelContainer &&
+            e.GetPosition(labelContainer).Y >= 56 &&
+            ShouldScheduleInlineRename(
+                _wasItemSelectedBeforeLeftDown,
+                ItemsList.SelectedItems.Contains(labelItem),
+                _itemModifiersOnLeftDown))
         {
             ScheduleInlineRename(labelItem);
             e.Handled = true;
@@ -1271,6 +1426,7 @@ public partial class FenceControl : System.Windows.Controls.UserControl
 
         _preserveSelectionForPotentialDrag = false;
         _pendingDragItem = null;
+        _itemModifiersOnLeftDown = ModifierKeys.None;
     }
 
     private void ExpandedItemLabel_PreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
@@ -1278,12 +1434,25 @@ public partial class FenceControl : System.Windows.Controls.UserControl
         CancelPendingInlineRename();
         _pendingDragItem = null;
         _wasItemSelectedBeforeLeftDown = true;
+        _expandedLabelModifiersOnLeftDown = Keyboard.Modifiers;
         _ignoreExpandedLabelMouseUp = e.ClickCount >= 2;
-        if (_ignoreExpandedLabelMouseUp && sender is TextBlock { DataContext: FolderItem item })
+        if (sender is TextBlock { DataContext: FolderItem item } &&
+            (_expandedLabelModifiersOnLeftDown & ModifierKeys.Control) != 0)
         {
-            AppLogger.Log($"User double-clicked expanded item label: {item.FullPath}");
-            ItemsList.SelectedItem = item;
-            OpenItem(item);
+            ItemsList.SelectedItems.Remove(item);
+            _selectionAnchorIndex = ItemsList.Items.IndexOf(item);
+            _ignoreExpandedLabelMouseUp = true;
+            UpdateExpandedItemLabelOverlay();
+        }
+        else if ((_expandedLabelModifiersOnLeftDown & ModifierKeys.Shift) != 0)
+        {
+            _ignoreExpandedLabelMouseUp = true;
+        }
+        else if (_ignoreExpandedLabelMouseUp && sender is TextBlock { DataContext: FolderItem doubleClickedItem })
+        {
+            AppLogger.Log($"User double-clicked expanded item label: {doubleClickedItem.FullPath}");
+            ItemsList.SelectedItem = doubleClickedItem;
+            OpenItem(doubleClickedItem);
         }
         e.Handled = true;
     }
@@ -1292,13 +1461,27 @@ public partial class FenceControl : System.Windows.Controls.UserControl
     {
         if (!_ignoreExpandedLabelMouseUp &&
             sender is TextBlock { DataContext: FolderItem item } label &&
-            ItemsList.SelectedItems.Contains(item))
+            ShouldScheduleInlineRename(
+                _wasItemSelectedBeforeLeftDown,
+                ItemsList.SelectedItems.Contains(item),
+                _expandedLabelModifiersOnLeftDown))
         {
             ScheduleInlineRename(item);
         }
         _ignoreExpandedLabelMouseUp = false;
+        _expandedLabelModifiersOnLeftDown = ModifierKeys.None;
         e.Handled = true;
     }
+
+    internal static bool ShouldShowExpandedSelectionLabel(int selectedItemCount) => selectedItemCount == 1;
+
+    internal static bool ShouldScheduleInlineRename(
+        bool wasSelectedBeforeMouseDown,
+        bool isStillSelected,
+        ModifierKeys modifiers) =>
+        wasSelectedBeforeMouseDown &&
+        isStillSelected &&
+        modifiers == ModifierKeys.None;
 
     private void ScheduleInlineRename(FolderItem item)
     {
@@ -1331,13 +1514,36 @@ public partial class FenceControl : System.Windows.Controls.UserControl
         _inlineRenameLabel = label;
         _inlineRenameTextBox = editor;
         editor.Text = item.Name;
+        ExpandedItemLabelOverlay.IsHitTestVisible = true;
         InlineRenameAppearance.Apply(editor, item.Name);
         ApplyFenceRenameEditorLayout(editor);
         label.Visibility = Visibility.Collapsed;
         editor.Visibility = Visibility.Visible;
+        ExpandedItemLabelOverlay.Background = System.Windows.Media.Brushes.Transparent;
         if (Window.GetWindow(this) is MainWindow mainWindow)
         {
-            mainWindow.FocusInlineRenameEditor(editor);
+            UpdateLayout();
+            if (mainWindow.TryGetElementPhysicalScreenBounds(editor, out var physicalBounds))
+            {
+                var renameWindow = new DesktopRenameWindow(
+                    item.Name,
+                    physicalBounds,
+                    editor.ActualWidth,
+                    editor.ActualHeight,
+                    InlineRenameAppearance.GetInitialSelectionLength(item.FullPath, item.Name));
+                renameWindow.DiagnosticContext = "Fence";
+                _inlineRenameWindow = renameWindow;
+                renameWindow.TryCommitRequested = text => CommitInlineRename(text);
+                renameWindow.CancelRequested = EndInlineRename;
+                editor.Visibility = Visibility.Collapsed;
+                renameWindow.Show();
+                AppLogger.Log($"Fence rename opened in independent editor window at {physicalBounds.X},{physicalBounds.Y}.");
+            }
+            else
+            {
+                mainWindow.FocusInlineRenameEditor(editor);
+                editor.Select(0, InlineRenameAppearance.GetInitialSelectionLength(item.FullPath, item.Name));
+            }
         }
         else
         {
@@ -1370,7 +1576,7 @@ public partial class FenceControl : System.Windows.Controls.UserControl
 
     private static void ApplyFenceRenameEditorLayout(System.Windows.Controls.TextBox editor)
     {
-        editor.Width = InlineRenameAppearance.MaximumWidth;
+        editor.Width = InlineRenameAppearance.GetEditorWidth(editor, editor.Text, 78);
         editor.MinHeight = InlineRenameAppearance.EditorHeight;
         editor.TextWrapping = TextWrapping.Wrap;
         editor.TextAlignment = TextAlignment.Center;
@@ -1378,7 +1584,7 @@ public partial class FenceControl : System.Windows.Controls.UserControl
         editor.AcceptsReturn = true;
         editor.HorizontalScrollBarVisibility = System.Windows.Controls.ScrollBarVisibility.Disabled;
         editor.VerticalScrollBarVisibility = System.Windows.Controls.ScrollBarVisibility.Hidden;
-        editor.Height = InlineRenameAppearance.MeasureWrappedHeight(editor, editor.Text, InlineRenameAppearance.MaximumWidth);
+        editor.Height = InlineRenameAppearance.MeasureWrappedHeight(editor, editor.Text, editor.Width);
         AppLogger.Log($"Fence rename editor measured. TextLength={editor.Text.Length}; Height={editor.Height:0.##}");
     }
 
@@ -1387,9 +1593,16 @@ public partial class FenceControl : System.Windows.Controls.UserControl
         if (_inlineRenameItem != null) CommitInlineRename();
     }
 
-    internal bool CommitInlineRenameIfPointerOutside(System.Windows.Point screenPoint)
+    internal bool CommitInlineRenameIfPointerOutside(System.Windows.Point screenPoint, long mouseEventTicks = long.MaxValue)
     {
         if (_inlineRenameItem == null || _inlineRenameTextBox == null) return false;
+
+        if (_inlineRenameWindow is { IsVisible: true } renameWindow)
+        {
+            if (!renameWindow.ExistedAtMouseEvent(mouseEventTicks) ||
+                renameWindow.ContainsPhysicalScreenPoint(screenPoint)) return false;
+            return renameWindow.RequestCommitIfPointerOutside(screenPoint);
+        }
 
         try
         {
@@ -1404,40 +1617,56 @@ public partial class FenceControl : System.Windows.Controls.UserControl
             // A detached editor cannot contain the current pointer.
         }
 
-        CommitInlineRename();
-        return true;
+        return CommitInlineRename();
     }
 
-    private void CommitInlineRename()
+    internal bool IsPointerInsideIndependentRename(
+        System.Windows.Point screenPoint,
+        long mouseEventTicks) =>
+        _inlineRenameWindow is { IsVisible: true } renameWindow &&
+        renameWindow.ExistedAtMouseEvent(mouseEventTicks) &&
+        renameWindow.ContainsPhysicalScreenPoint(screenPoint);
+
+    private bool CommitInlineRename(string? requestedName = null)
     {
-        if (_inlineRenameItem == null || _inlineRenameTextBox == null || _isCommittingInlineRename) return;
+        if (_inlineRenameItem == null || _inlineRenameTextBox == null || _isCommittingInlineRename) return false;
         _isCommittingInlineRename = true;
         try
         {
             var item = _inlineRenameItem;
             var editor = _inlineRenameTextBox;
-            var newName = editor.Text.Trim();
+            var newName = (requestedName ?? editor.Text).Trim();
             if (string.IsNullOrWhiteSpace(newName))
             {
                 System.Windows.MessageBox.Show(_loc.T("ItemNameCannotBeEmpty"), "MiniFences", MessageBoxButton.OK, MessageBoxImage.Warning);
                 editor.Focus();
-                return;
+                return false;
             }
 
-            if (!_folderItemService.TryRenameItem(item, newName, out var renamedPath, out var error))
+            var originalPath = item.FullPath;
+            string? renamedPath;
+            string? error;
+            var renameSucceeded = ActionHistory is null
+                ? _folderItemService.TryRenameItem(item, newName, out renamedPath, out error)
+                : ActionHistory.ExecuteRename(_folderItemService, item, newName, out renamedPath, out error);
+            if (!renameSucceeded)
             {
                 System.Windows.MessageBox.Show(FormatFileOperationError(error, "CouldNotRenameItem"), "MiniFences", MessageBoxButton.OK, MessageBoxImage.Warning);
                 editor.Focus();
                 editor.SelectAll();
-                return;
+                return false;
             }
 
-            if (ReplaceAssignedPathAfterRename(Config, item.FullPath, renamedPath))
+            if (ReplaceAssignedPathAfterRename(Config, originalPath, renamedPath))
             {
                 Changed?.Invoke(this, EventArgs.Empty);
             }
+            if (!string.IsNullOrWhiteSpace(renamedPath) &&
+                !string.Equals(originalPath, renamedPath, StringComparison.OrdinalIgnoreCase))
+                ItemRenamed?.Invoke(originalPath, renamedPath);
             EndInlineRename();
             LoadFolderItems();
+            return true;
         }
         finally
         {
@@ -1453,6 +1682,10 @@ public partial class FenceControl : System.Windows.Controls.UserControl
         _inlineRenameItem = null;
         _inlineRenameLabel = null;
         _inlineRenameTextBox = null;
+        var renameWindow = _inlineRenameWindow;
+        _inlineRenameWindow = null;
+        renameWindow?.CloseWithoutCommit();
+        ExpandedItemLabelOverlay.Background = new SolidColorBrush(System.Windows.Media.Color.FromArgb(0x48, 0x00, 0x78, 0xD7));
         if (editor != null && Window.GetWindow(this) is MainWindow mainWindow)
         {
             mainWindow.ReleaseInlineRenameEditor(editor);
@@ -1474,6 +1707,14 @@ public partial class FenceControl : System.Windows.Controls.UserControl
     }
 
     internal void SelectItemForTesting(int index) => ItemsList.SelectedIndex = index;
+    internal void SelectItemsForTesting(params int[] indices)
+    {
+        ItemsList.SelectedItems.Clear();
+        foreach (var index in indices.Where(index => index >= 0 && index < ItemsList.Items.Count))
+            ItemsList.SelectedItems.Add(ItemsList.Items[index]);
+        ItemsList.UpdateLayout();
+        ApplyPortalView();
+    }
 
     internal void ScrollItemsForTesting(double offset)
     {
@@ -1489,9 +1730,19 @@ public partial class FenceControl : System.Windows.Controls.UserControl
         if (ItemsList.SelectedItem is not FolderItem item ||
             ItemsList.ItemContainerGenerator.ContainerFromItem(item) is not System.Windows.Controls.ListViewItem container)
             return false;
-        var expected = container.TranslatePoint(new System.Windows.Point(0, 56), ItemLabelOverlayCanvas);
-        return Math.Abs(Canvas.GetLeft(ExpandedItemLabelOverlay) - expected.X) < 0.5 &&
+        var expected = container.TranslatePoint(new System.Windows.Point(0, 0), ItemLabelOverlayCanvas);
+        var centeredLeft = expected.X - (ExpandedItemLabelOverlay.Width - container.ActualWidth) / 2;
+        var maximumLeft = Math.Max(0, ItemLabelOverlayCanvas.ActualWidth - ExpandedItemLabelOverlay.Width);
+        var expectedLeft = Math.Clamp(centeredLeft, 0, maximumLeft);
+        return Math.Abs(Canvas.GetLeft(ExpandedItemLabelOverlay) - expectedLeft) < 0.5 &&
                Math.Abs(Canvas.GetTop(ExpandedItemLabelOverlay) - expected.Y) < 0.5;
+    }
+
+    internal bool ExpandedOverlayAllowsUnderlyingItemSelectionForTesting()
+    {
+        UpdateExpandedItemLabelOverlay();
+        return ExpandedItemLabelOverlay.Visibility == Visibility.Visible &&
+               !ExpandedItemLabelOverlay.IsHitTestVisible;
     }
 
     internal void RaiseBlankAreaLeftClickForTesting()
@@ -1521,33 +1772,45 @@ public partial class FenceControl : System.Windows.Controls.UserControl
 
     private void Item_DragOver(object sender, System.Windows.DragEventArgs e)
     {
+        var host = Window.GetWindow(this) as MainWindow;
         if (sender is not System.Windows.Controls.ListViewItem { DataContext: FolderItem target } container ||
-            !System.IO.Directory.Exists(target.FullPath) ||
+            target.Kind != "Folder" ||
             !TryGetDroppedFiles(e, out var paths) ||
-            !IsPointerOverFolderIcon(container, e)) return;
+            !IsPointerOverFolderIcon(container, e))
+        {
+            host?.ClearDragTargetHint();
+            return;
+        }
 
-        e.Effects = CanMoveIntoFolder(paths, target.FullPath)
-            ? System.Windows.DragDropEffects.Move
-            : System.Windows.DragDropEffects.None;
+        var canMove = CanMoveIntoFolder(paths, target.FullPath, validateFileSystem: false);
+        e.Effects = canMove ? System.Windows.DragDropEffects.Move : System.Windows.DragDropEffects.None;
+        if (canMove && host != null) host.ShowDragHint(
+            target.Name,
+            paths,
+            e.Data);
+        else if (!canMove) host?.ShowDragSourceHint(null);
         e.Handled = true;
     }
 
-    private void Item_Drop(object sender, System.Windows.DragEventArgs e)
+    private async void Item_Drop(object sender, System.Windows.DragEventArgs e)
     {
+        (Window.GetWindow(this) as MainWindow)?.HideDragHint();
         if (sender is not System.Windows.Controls.ListViewItem { DataContext: FolderItem target } container ||
             !System.IO.Directory.Exists(target.FullPath) ||
             !TryGetDroppedFiles(e, out var paths) ||
             !IsPointerOverFolderIcon(container, e)) return;
 
         e.Handled = true;
-        if (!CanMoveIntoFolder(paths, target.FullPath))
+        if (_dropOperationInProgress || !CanMoveIntoFolder(paths, target.FullPath))
         {
             e.Effects = System.Windows.DragDropEffects.None;
             return;
         }
 
-        var result = _folderItemService.MoveIntoFolder(paths, target.FullPath);
-        e.Effects = result.Moved > 0 ? System.Windows.DragDropEffects.Move : System.Windows.DragDropEffects.None;
+        e.Effects = System.Windows.DragDropEffects.Move;
+        AppLogger.Log($"Folder icon drop accepted asynchronously. Destination={target.FullPath}; Items={paths.Length}");
+        var result = await RunDropOperationAsync(
+            () => Task.Run(() => _folderItemService.MoveIntoFolder(paths, target.FullPath)));
         AppLogger.Log($"Folder icon drop completed. Destination={target.FullPath}; Moved={result.Moved}; Skipped={result.Skipped}; Errors={result.Errors.Count}");
         if (result.Errors.Count > 0 || result.Skipped > 0)
         {
@@ -1561,8 +1824,23 @@ public partial class FenceControl : System.Windows.Controls.UserControl
 
     private static bool IsPointerOverFolderIcon(System.Windows.Controls.ListViewItem container, System.Windows.DragEventArgs e)
     {
-        var image = FindVisualChild<System.Windows.Controls.Image>(container);
-        return image != null && IsFolderIconHotZone(e.GetPosition(image), image.RenderSize);
+        return IsStableFolderDropZone(e.GetPosition(container), container.RenderSize);
+    }
+
+    private async Task<T> RunDropOperationAsync<T>(Func<Task<T>> operation)
+    {
+        _dropOperationInProgress = true;
+        try
+        {
+            // Yield once before starting file-system work so OLE can end the
+            // drag immediately and remove Explorer's drag image.
+            await Task.Yield();
+            return await operation();
+        }
+        finally
+        {
+            _dropOperationInProgress = false;
+        }
     }
 
     internal static bool IsFolderIconHotZone(System.Windows.Point point, System.Windows.Size iconSize)
@@ -1575,9 +1853,26 @@ public partial class FenceControl : System.Windows.Controls.UserControl
             iconSize.Height + tolerance * 2).Contains(point);
     }
 
-    internal static bool CanMoveIntoFolder(IEnumerable<string> sourcePaths, string destinationFolder)
+    internal static bool IsStableFolderDropZone(System.Windows.Point point, System.Windows.Size size) =>
+        new Rect(0, 0, size.Width, size.Height).Contains(point);
+
+    internal static bool IsFolderCellGlyphDropZone(System.Windows.Point point, System.Windows.Size cellSize)
     {
-        if (string.IsNullOrWhiteSpace(destinationFolder) || !System.IO.Directory.Exists(destinationFolder)) return false;
+        const double glyphWidth = 42;
+        const double glyphHeight = 42;
+        const double tolerance = 6;
+        var left = (cellSize.Width - glyphWidth) / 2 - tolerance;
+        var top = 4 - tolerance;
+        return new Rect(left, top, glyphWidth + tolerance * 2, glyphHeight + tolerance * 2).Contains(point);
+    }
+
+    internal static bool CanMoveIntoFolder(
+        IEnumerable<string> sourcePaths,
+        string destinationFolder,
+        bool validateFileSystem = true)
+    {
+        if (string.IsNullOrWhiteSpace(destinationFolder) ||
+            (validateFileSystem && !System.IO.Directory.Exists(destinationFolder))) return false;
         var destination = System.IO.Path.GetFullPath(destinationFolder).TrimEnd(System.IO.Path.DirectorySeparatorChar);
         return sourcePaths.Any(path =>
         {
@@ -1586,7 +1881,7 @@ public partial class FenceControl : System.Windows.Controls.UserControl
             {
                 var source = System.IO.Path.GetFullPath(path).TrimEnd(System.IO.Path.DirectorySeparatorChar);
                 return !string.Equals(source, destination, StringComparison.OrdinalIgnoreCase) &&
-                       (System.IO.File.Exists(source) || System.IO.Directory.Exists(source));
+                       (!validateFileSystem || System.IO.File.Exists(source) || System.IO.Directory.Exists(source));
             }
             catch
             {
@@ -1640,15 +1935,41 @@ public partial class FenceControl : System.Windows.Controls.UserControl
 
         try
         {
-            var data = new System.Windows.DataObject();
+            using var data = new ShellCompatibleDataObject();
             if (Config.IsDesktopGroup)
                 DesktopDragData.Set(data, paths, looseIcon: false, paths[0]);
             else
+            {
+                DesktopDragData.MarkMiniFencesSource(data);
                 DesktopDragData.SetFileDropList(data, paths);
+            }
+            var dragIcon = items.FirstOrDefault()?.Icon ?? FolderItemService.GetGuaranteedPathIcon(paths[0]);
+            var host = Window.GetWindow(this) as MainWindow;
+            var dragName = items.FirstOrDefault()?.Name;
+            var dragLabel = string.IsNullOrWhiteSpace(dragName)
+                ? dragName
+                : DesktopIconLabelConverter.FormatTwoLines(dragName, 78);
+            // Keep MiniFences' source image in its own topmost HWND for the
+            // whole drag. Windows' Shell drag image disappears when a folder
+            // cell inside our Explorer-hosted WPF desktop becomes the target.
+            // The separate destination HWND can now show/hide independently
+            // without rebuilding, resizing, or obscuring this source image.
+            host?.ShowDragSourceHint(
+                dragIcon,
+                dragLabel,
+                expanded: false,
+                textWidth: 78,
+                pinUntilClear: true);
+            AppLogger.Log("Independent MiniFences drag image initialized.");
             AppLogger.Log($"Item drag started with {paths.Length} item(s): {string.Join("; ", paths)}");
             if (Config.IsDesktopGroup) DesktopItemDragStarted?.Invoke(this, EventArgs.Empty);
             System.Windows.DragDropEffects result;
             System.Windows.QueryContinueDragEventHandler? desktopDropGuard = null;
+            System.Windows.QueryContinueDragEventHandler escapeFeedbackGuard = (_, e) =>
+            {
+                if (e.EscapePressed) host?.ClearDragHint();
+            };
+            QueryContinueDrag += escapeFeedbackGuard;
             var desktopDropCanceled = false;
             if (Config.IsDesktopGroup && IsExplorerDesktopPointForDrag != null)
             {
@@ -1675,8 +1996,11 @@ public partial class FenceControl : System.Windows.Controls.UserControl
             }
             finally
             {
+                QueryContinueDrag -= escapeFeedbackGuard;
                 if (desktopDropGuard != null) QueryContinueDrag -= desktopDropGuard;
                 if (Config.IsDesktopGroup) DesktopItemDragEnded?.Invoke(this, EventArgs.Empty);
+                host?.ClearDragHint();
+                UpdateExpandedItemLabelOverlay();
             }
             var cursor = Forms.Cursor.Position;
             var overMiniFencesSurface = IsMiniFencesSurfacePointForDrag?.Invoke(cursor) == true;
@@ -1692,6 +2016,7 @@ public partial class FenceControl : System.Windows.Controls.UserControl
         }
         catch (Exception ex)
         {
+            UpdateExpandedItemLabelOverlay();
             AppLogger.LogException("Item drag failed", ex);
         }
     }
@@ -1821,8 +2146,11 @@ public partial class FenceControl : System.Windows.Controls.UserControl
             return;
         }
 
+        var originalPath = item.FullPath;
+        string? renamedPath;
+        string? error;
         var renameSucceeded = ActionHistory is null
-            ? _folderItemService.TryRenameItem(item, dialog.InputText, out var renamedPath, out var error)
+            ? _folderItemService.TryRenameItem(item, dialog.InputText, out renamedPath, out error)
             : ActionHistory.ExecuteRename(_folderItemService, item, dialog.InputText, out renamedPath, out error);
         if (!renameSucceeded)
         {
@@ -1830,11 +2158,13 @@ public partial class FenceControl : System.Windows.Controls.UserControl
             return;
         }
 
-        var originalPath = item.FullPath;
         if (ReplaceAssignedPathAfterRename(Config, originalPath, renamedPath))
         {
             Changed?.Invoke(this, EventArgs.Empty);
         }
+        if (!string.IsNullOrWhiteSpace(renamedPath) &&
+            !string.Equals(originalPath, renamedPath, StringComparison.OrdinalIgnoreCase))
+            ItemRenamed?.Invoke(originalPath, renamedPath);
         LoadFolderItems();
     }
 
@@ -2333,18 +2663,55 @@ public partial class FenceControl : System.Windows.Controls.UserControl
 
     private void FenceControl_DragEnter(object sender, System.Windows.DragEventArgs e)
     {
-        if (e.Data.GetData("MiniFences.TabFenceId") is string sourceFenceId)
+        if (DesktopDragData.GetCachedData(e.Data, TabFenceIdFormat) is string sourceFenceId)
         {
+            (Window.GetWindow(this) as MainWindow)?.HideDragHint();
             UpdateTabMergeDragState(e, sourceFenceId);
             return;
         }
         UpdateDragState(e);
     }
 
+    private void FenceControl_PreviewDragOver(object sender, System.Windows.DragEventArgs e)
+    {
+        // ListView/ScrollViewer may consume the bubbling OLE drag event before
+        // it reaches the Fence. Handle ordinary Fence drops on the tunneling
+        // route, while preserving the dedicated folder-icon hot zone below.
+        if (ShouldRouteDropToFolderIcon(e)) return;
+        if (DesktopDragData.GetCachedData(e.Data, TabFenceIdFormat) is string sourceFenceId)
+        {
+            (Window.GetWindow(this) as MainWindow)?.HideDragHint();
+            UpdateTabMergeDragState(e, sourceFenceId);
+            return;
+        }
+        UpdateDragState(e);
+    }
+
+    private void FenceControl_PreviewDrop(object sender, System.Windows.DragEventArgs e)
+    {
+        if (ShouldRouteDropToFolderIcon(e)) return;
+        FenceControl_Drop(sender, e);
+    }
+
+    private bool ShouldRouteDropToFolderIcon(System.Windows.DragEventArgs e)
+    {
+        if (e.OriginalSource is not DependencyObject source ||
+            FindVisualParent<System.Windows.Controls.ListViewItem>(source) is not
+                { DataContext: FolderItem target } container ||
+            target.Kind != "Folder" ||
+            !TryGetDroppedFiles(e, out _))
+        {
+            return false;
+        }
+
+        return IsPointerOverFolderIcon(container, e);
+    }
+
     private void FenceControl_DragOver(object sender, System.Windows.DragEventArgs e)
     {
-        if (e.Data.GetData("MiniFences.TabFenceId") is string sourceFenceId)
+        if (DesktopDragData.GetCachedData(e.Data, TabFenceIdFormat) is string sourceFenceId)
         {
+            (Window.GetWindow(this) as MainWindow)?.HideDragHint();
             UpdateTabMergeDragState(e, sourceFenceId);
             return;
         }
@@ -2353,17 +2720,53 @@ public partial class FenceControl : System.Windows.Controls.UserControl
 
     private void FenceControl_DragLeave(object sender, System.Windows.DragEventArgs e)
     {
-        if (e.Data.GetData("MiniFences.TabDragPreviewContext") is TabDragPreviewContext previewContext)
+        // DragLeave is a routed event. Child ListViewItems raise it whenever the
+        // pointer crosses an icon/template boundary, and that event bubbles to
+        // the Fence even though the pointer is still inside this control. Treating
+        // those child transitions as a real Fence exit repeatedly changed border
+        // thickness and forced layout during a drag.
+        var host = Window.GetWindow(this) as MainWindow;
+        if (IsPointerInsideFence(Forms.Cursor.Position) &&
+            (host == null || host.IsTopmostFenceAtScreenPoint(this, Forms.Cursor.Position))) return;
+        if (DesktopDragData.GetCachedData(e.Data, TabPreviewContextFormat) is TabDragPreviewContext previewContext)
             previewContext.SetMergePreview(false, 0);
         ClearDragHighlight();
+        if (host != null && !host.IsMiniFencesWindowAtScreenPoint(Forms.Cursor.Position))
+        {
+            host.EndNativeShellDragImage();
+            host.HideDragHint();
+        }
     }
 
-    private void FenceControl_Drop(object sender, System.Windows.DragEventArgs e)
+    private bool IsPointerInsideFence(System.Drawing.Point screenPoint)
     {
-        if (e.Data.GetData("MiniFences.TabDragPreviewContext") is TabDragPreviewContext previewContext)
+        if (!IsVisible || ActualWidth <= 0 || ActualHeight <= 0) return false;
+        try
+        {
+            var local = PointFromScreen(new System.Windows.Point(screenPoint.X, screenPoint.Y));
+            return new Rect(0, 0, ActualWidth, ActualHeight).Contains(local);
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private async void FenceControl_Drop(object sender, System.Windows.DragEventArgs e)
+    {
+        var host = Window.GetWindow(this) as MainWindow;
+        if (host != null && !host.IsTopmostFenceAtScreenPoint(this, Forms.Cursor.Position))
+        {
+            e.Effects = System.Windows.DragDropEffects.None;
+            e.Handled = true;
+            ClearDragHighlight();
+            return;
+        }
+        if (DesktopDragData.GetCachedData(e.Data, TabPreviewContextFormat) is TabDragPreviewContext previewContext)
             previewContext.SetMergePreview(false, 0);
+        host?.HideDragHint();
         ClearDragHighlight();
-        if (e.Data.GetData("MiniFences.TabFenceId") is string sourceFenceId)
+        if (DesktopDragData.GetCachedData(e.Data, TabFenceIdFormat) is string sourceFenceId)
         {
             var inMergeZone = IsTabMergeDropPoint(e.GetPosition(this));
             if (CanAcceptTabMerge(sourceFenceId) && inMergeZone)
@@ -2392,25 +2795,35 @@ public partial class FenceControl : System.Windows.Controls.UserControl
             AppLogger.Log($"Fence drop ignored because item path data was unavailable: {Config.Title}");
             return;
         }
+        if (_dropOperationInProgress)
+        {
+            e.Effects = System.Windows.DragDropEffects.None;
+            e.Handled = true;
+            return;
+        }
         AppLogger.Log($"Fence drop received {paths.Length} item(s): {Config.Title}");
 
         if (Config.IsDesktopGroup)
         {
             var desktopPaths = paths.Where(IsDirectChildOfDesktopRoot).ToArray();
             var pathsToRestore = paths.Where(path => !IsDirectChildOfDesktopRoot(path)).ToArray();
-            FolderMoveResult? restoreResult = null;
-            if (pathsToRestore.Length > 0)
+            var insertionIndex = GetDropInsertionIndex(e);
+            e.Effects = System.Windows.DragDropEffects.Move;
+            e.Handled = true;
+            AppLogger.Log($"Desktop Fence drop released to OLE before file work. Items={paths.Length}; Restore={pathsToRestore.Length}");
+            var restoreResult = await RunDropOperationAsync<FolderMoveResult?>(async () =>
             {
+                if (pathsToRestore.Length == 0) return null;
                 var desktopRoot = Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory);
-                restoreResult = ActionHistory is null
-                    ? _folderItemService.MoveIntoFolder(pathsToRestore, desktopRoot)
-                    : ActionHistory.ExecuteFileMove("将文件移回桌面",
+                return ActionHistory is null
+                    ? await Task.Run(() => _folderItemService.MoveIntoFolder(pathsToRestore, desktopRoot))
+                    : await ActionHistory.ExecuteFileMoveAsync("将文件移回桌面",
                         () => _folderItemService.MoveIntoFolder(pathsToRestore, desktopRoot));
-                if (restoreResult.Errors.Count > 0 || restoreResult.Skipped > 0)
-                {
-                    System.Windows.MessageBox.Show(BuildMoveSummary(restoreResult), "MiniFences", MessageBoxButton.OK,
-                        restoreResult.Errors.Count > 0 ? MessageBoxImage.Warning : MessageBoxImage.Information);
-                }
+            });
+            if (restoreResult != null && (restoreResult.Errors.Count > 0 || restoreResult.Skipped > 0))
+            {
+                System.Windows.MessageBox.Show(BuildMoveSummary(restoreResult), "MiniFences", MessageBoxButton.OK,
+                    restoreResult.Errors.Count > 0 ? MessageBoxImage.Warning : MessageBoxImage.Information);
             }
 
             var assignablePaths = desktopPaths
@@ -2424,7 +2837,6 @@ public partial class FenceControl : System.Windows.Controls.UserControl
                 return;
             }
 
-            var insertionIndex = GetDropInsertionIndex(e);
             Config.AssignedPaths = ItemsList.Items
                 .OfType<FolderItem>()
                 .Select(item => item.FullPath)
@@ -2433,17 +2845,17 @@ public partial class FenceControl : System.Windows.Controls.UserControl
                 .ToList();
             Config.SortMode = "None";
             DesktopItemsAssigned?.Invoke(this, new DesktopItemsAssignedEventArgs(assignablePaths, insertionIndex));
-            e.Effects = restoreResult?.Moved > 0
-                ? System.Windows.DragDropEffects.Move
-                : System.Windows.DragDropEffects.Link;
-            e.Handled = true;
             return;
         }
 
-        var result = ActionHistory is null
-            ? _folderItemService.MoveIntoFolder(paths, GetPortalPath())
-            : ActionHistory.ExecuteFileMove($"移动到 Fence“{Config.Title}”",
-                () => _folderItemService.MoveIntoFolder(paths, GetPortalPath()));
+        var portalPath = GetPortalPath();
+        e.Effects = System.Windows.DragDropEffects.Move;
+        e.Handled = true;
+        AppLogger.Log($"Portal Fence drop released to OLE before file work. Destination={portalPath}; Items={paths.Length}");
+        var result = await RunDropOperationAsync(() => ActionHistory is null
+            ? Task.Run(() => _folderItemService.MoveIntoFolder(paths, portalPath))
+            : ActionHistory.ExecuteFileMoveAsync($"移动到 Fence“{Config.Title}”",
+                () => _folderItemService.MoveIntoFolder(paths, portalPath)));
         if (result.Errors.Count > 0)
         {
             var message = BuildMoveSummary(result);
@@ -2453,6 +2865,12 @@ public partial class FenceControl : System.Windows.Controls.UserControl
         }
 
         LoadFolderItems();
+        // The destination can refresh itself, but the source Fence is a
+        // separate view (and may watch a different directory). Notify the
+        // window coordinator immediately so every Fence drops stale source
+        // items as soon as the file move finishes instead of waiting for a
+        // FileSystemWatcher packet.
+        ItemsChanged?.Invoke(this, EventArgs.Empty);
         if (result.Skipped > 0)
         {
             System.Windows.MessageBox.Show(BuildMoveSummary(result), "MiniFences", MessageBoxButton.OK, MessageBoxImage.Information);
@@ -2512,20 +2930,35 @@ public partial class FenceControl : System.Windows.Controls.UserControl
 
     private void UpdateDragState(System.Windows.DragEventArgs e)
     {
-        if (!TryGetDroppedFiles(e, out var paths))
+        var host = Window.GetWindow(this) as MainWindow;
+        if (host != null && !host.TryActivateTopmostFenceDragTarget(this, Forms.Cursor.Position))
         {
             e.Effects = System.Windows.DragDropEffects.None;
             e.Handled = true;
             ClearDragHighlight();
             return;
         }
+        if (_dropOperationInProgress)
+        {
+            e.Effects = System.Windows.DragDropEffects.None;
+            e.Handled = true;
+            (Window.GetWindow(this) as MainWindow)?.HideDragHint();
+            ClearDragHighlight();
+            return;
+        }
+        if (!TryGetDroppedFiles(e, out var paths))
+        {
+            e.Effects = System.Windows.DragDropEffects.None;
+            e.Handled = true;
+            (Window.GetWindow(this) as MainWindow)?.HideDragHint();
+            ClearDragHighlight();
+            return;
+        }
 
-        e.Effects = Config.IsDesktopGroup && paths.All(IsDirectChildOfDesktopRoot)
-            ? System.Windows.DragDropEffects.Link
-            : System.Windows.DragDropEffects.Move;
+        e.Effects = System.Windows.DragDropEffects.Move;
         e.Handled = true;
-        OuterBorder.BorderBrush = System.Windows.Media.Brushes.DeepSkyBlue;
-        OuterBorder.BorderThickness = new Thickness(2);
+        SetDragHighlight();
+        host?.ShowDragSourceHint(paths, e.Data);
     }
 
     private static bool IsDirectChildOf(string path, string folder)
@@ -2585,12 +3018,11 @@ public partial class FenceControl : System.Windows.Controls.UserControl
                                (CanAcceptTabMerge(sourceFenceId) || BelongsToThisTabGroup(sourceFenceId));
         e.Effects = canMergeOrReturn ? System.Windows.DragDropEffects.Move : System.Windows.DragDropEffects.None;
         e.Handled = true;
-        if (e.Data.GetData("MiniFences.TabDragPreviewContext") is TabDragPreviewContext previewContext)
+        if (DesktopDragData.GetCachedData(e.Data, TabPreviewContextFormat) is TabDragPreviewContext previewContext)
             previewContext.SetMergePreview(canMergeOrReturn, ActualWidth / 3);
         if (canMergeOrReturn)
         {
-            OuterBorder.BorderBrush = System.Windows.Media.Brushes.DeepSkyBlue;
-            OuterBorder.BorderThickness = new Thickness(2);
+            SetDragHighlight();
         }
         else
         {
@@ -2616,10 +3048,20 @@ public partial class FenceControl : System.Windows.Controls.UserControl
         fenceWidth > 0 && point.Y >= 0 && point.Y <= CollapsedHeight &&
         point.X >= fenceWidth / 3 && point.X <= fenceWidth * 2 / 3;
 
-    private void ClearDragHighlight()
+    internal void ClearDragHighlight()
     {
+        if (!_dragHighlightActive) return;
+        _dragHighlightActive = false;
         OuterBorder.BorderBrush = new SolidColorBrush(System.Windows.Media.Color.FromArgb(0x88, 0xFF, 0xFF, 0xFF));
         OuterBorder.BorderThickness = Config.UseCleanStyle ? new Thickness(0) : new Thickness(1);
+    }
+
+    private void SetDragHighlight()
+    {
+        if (_dragHighlightActive) return;
+        _dragHighlightActive = true;
+        OuterBorder.BorderBrush = System.Windows.Media.Brushes.DeepSkyBlue;
+        OuterBorder.BorderThickness = new Thickness(2);
     }
 
     private void ApplyStyle()
@@ -2675,8 +3117,47 @@ public partial class FenceControl : System.Windows.Controls.UserControl
     private void FenceControl_MouseEnter(object sender, System.Windows.Input.MouseEventArgs e)
     {
         ScrollViewer.SetVerticalScrollBarVisibility(ItemsList, ScrollBarVisibility.Auto);
-        if (!IsVisuallyCollapsed && !Config.IsLocked) ResizeThumb.Visibility = Visibility.Visible;
         SetHoverExpanded(true);
+        UpdateResizeHandleVisibility(e.GetPosition(this));
+    }
+
+    private void FenceControl_PreviewMouseMove(object sender, System.Windows.Input.MouseEventArgs e)
+    {
+        UpdateResizeHandleVisibility(e.GetPosition(this));
+    }
+
+    private void FenceControl_PreviewMouseWheel(object sender, MouseWheelEventArgs e)
+    {
+        if (e.OriginalSource is DependencyObject source &&
+            FindVisualParent<System.Windows.Controls.ListView>(source) != null)
+        {
+            return;
+        }
+
+        var scrollViewer = FindVisualChild<ScrollViewer>(ItemsList);
+        if (scrollViewer == null) return;
+
+        var wheelNotches = Math.Max(1, Math.Abs(e.Delta) / Mouse.MouseWheelDeltaForOneLine);
+        var configuredLines = SystemParameters.WheelScrollLines;
+        if (configuredLines < 0)
+        {
+            for (var notch = 0; notch < wheelNotches; notch += 1)
+            {
+                if (e.Delta > 0) scrollViewer.PageUp();
+                else scrollViewer.PageDown();
+            }
+        }
+        else
+        {
+            var lines = Math.Max(1, configuredLines) * wheelNotches;
+            for (var line = 0; line < lines; line += 1)
+            {
+                if (e.Delta > 0) scrollViewer.LineUp();
+                else scrollViewer.LineDown();
+            }
+        }
+
+        e.Handled = true;
     }
 
     private void FenceControl_MouseLeave(object sender, System.Windows.Input.MouseEventArgs e)
@@ -2684,6 +3165,16 @@ public partial class FenceControl : System.Windows.Controls.UserControl
         ScrollViewer.SetVerticalScrollBarVisibility(ItemsList, ScrollBarVisibility.Hidden);
         if (!_isResizing) ResizeThumb.Visibility = Visibility.Collapsed;
         SetHoverExpanded(false);
+    }
+
+    private void UpdateResizeHandleVisibility(System.Windows.Point pointer)
+    {
+        ResizeThumb.Visibility = !IsVisuallyCollapsed && !Config.IsLocked &&
+                                 (_isResizing || IsNearResizeHandle(
+                                     pointer, ActualWidth, ActualHeight,
+                                     ResizeThumb.VerticalAlignment == VerticalAlignment.Top))
+            ? Visibility.Visible
+            : Visibility.Collapsed;
     }
 
     private void SetHoverExpanded(bool expanded)
@@ -2714,7 +3205,7 @@ public partial class FenceControl : System.Windows.Controls.UserControl
         ContentArea.Visibility = isVisuallyCollapsed ? Visibility.Collapsed : Visibility.Visible;
         var showFooter = !isVisuallyCollapsed && !Config.UseCleanStyle;
         FooterPanel.Visibility = showFooter ? Visibility.Visible : Visibility.Collapsed;
-        ResizeThumb.Visibility = !isVisuallyCollapsed && !Config.IsLocked && (IsMouseOver || _isResizing)
+        ResizeThumb.Visibility = !isVisuallyCollapsed && !Config.IsLocked && _isResizing
             ? Visibility.Visible
             : Visibility.Collapsed;
         ResizeThumb.VerticalAlignment = bottomDocked ? VerticalAlignment.Top : VerticalAlignment.Bottom;
@@ -2739,6 +3230,7 @@ public partial class FenceControl : System.Windows.Controls.UserControl
         ContentBackground.CornerRadius = bottomDocked
             ? new CornerRadius(8, 8, 0, 0)
             : new CornerRadius(0, 0, 8, 8);
+        UpdateTabStripCornerRadii(bottomDocked);
 
         // A Canvas does not always immediately remeasure a child after only its
         // row definitions change. Settle the visual tree before a later drag can

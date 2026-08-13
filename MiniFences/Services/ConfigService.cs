@@ -584,6 +584,9 @@ public sealed class ConfigService
         config.SortMode = config.SortMode is "Name" or "Size" or "ItemType" or "Modified" or "Created" or "Category"
             ? config.SortMode
             : "None";
+        config.PortalViewMode = string.Equals(config.PortalViewMode, "List", StringComparison.OrdinalIgnoreCase)
+            ? "List"
+            : "Icons";
         if (double.IsNaN(config.Left) || double.IsInfinity(config.Left)) config.Left = 80 + index * 32;
         if (double.IsNaN(config.Top) || double.IsInfinity(config.Top)) config.Top = 80 + index * 32;
         return config;

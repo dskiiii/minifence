@@ -1,19 +1,27 @@
 <UserControl x:Class="MiniFences.FenceControl"
              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:local="clr-namespace:MiniFences"
         xmlns:controls="clr-namespace:MiniFences.Controls"
              xmlns:s="clr-namespace:System.Windows.Shapes;assembly=PresentationFramework"
              AllowDrop="True"
+             PreviewDragOver="FenceControl_PreviewDragOver"
+             PreviewDrop="FenceControl_PreviewDrop"
              DragEnter="FenceControl_DragEnter"
              DragLeave="FenceControl_DragLeave"
              DragOver="FenceControl_DragOver"
              Drop="FenceControl_Drop"
              ContextMenuOpening="FenceControl_ContextMenuOpening"
              PreviewMouseLeftButtonDown="FenceControl_PreviewMouseLeftButtonDown"
+             PreviewMouseMove="FenceControl_PreviewMouseMove"
+             PreviewMouseWheel="FenceControl_PreviewMouseWheel"
              MouseEnter="FenceControl_MouseEnter"
              MouseLeave="FenceControl_MouseLeave"
              MinWidth="240"
              MinHeight="180">
+    <UserControl.Resources>
+        <local:DesktopIconLabelConverter x:Key="DesktopIconLabelConverter" />
+    </UserControl.Resources>
     <UserControl.ContextMenu>
         <ContextMenu x:Name="FenceContextMenu" Opened="FenceContextMenu_Opened">
             <MenuItem x:Name="NewFenceMenuItem" Header="New Fence" Click="NewFenceMenuItem_Click" />
@@ -37,16 +45,18 @@
                 <MenuItem x:Name="SortCategoryMenuItem" Tag="Category" Header="Category" IsCheckable="True" Click="SortMenuItem_Click" />
             </MenuItem>
             <MenuItem x:Name="PortalViewMenuItem" Header="View">
-                <MenuItem x:Name="PortalIconsViewMenuItem" Header="Icons" Tag="Icons" IsCheckable="True" Click="PortalViewMenuItem_Click" />
-                <MenuItem x:Name="PortalListViewMenuItem" Header="List" Tag="List" IsCheckable="True" Click="PortalViewMenuItem_Click" />
+                <MenuItem x:Name="PortalIconsViewMenuItem" Header="Icons" Tag="Icons" IsCheckable="True"
+                          PreviewMouseLeftButtonDown="PortalViewMenuItem_PreviewMouseLeftButtonDown" />
+                <MenuItem x:Name="PortalListViewMenuItem" Header="List" Tag="List" IsCheckable="True"
+                          PreviewMouseLeftButtonDown="PortalViewMenuItem_PreviewMouseLeftButtonDown" />
                 <Separator />
-                <MenuItem Header="Small icons" Tag="32" IsCheckable="True" Click="PortalIconSizeMenuItem_Click" />
-                <MenuItem Header="Medium icons" Tag="42" IsCheckable="True" Click="PortalIconSizeMenuItem_Click" />
-                <MenuItem Header="Large icons" Tag="56" IsCheckable="True" Click="PortalIconSizeMenuItem_Click" />
+                <MenuItem x:Name="PortalSmallIconsMenuItem" Header="Small icons" Tag="32" IsCheckable="True" Click="PortalIconSizeMenuItem_Click" />
+                <MenuItem x:Name="PortalMediumIconsMenuItem" Header="Medium icons" Tag="42" IsCheckable="True" Click="PortalIconSizeMenuItem_Click" />
+                <MenuItem x:Name="PortalLargeIconsMenuItem" Header="Large icons" Tag="56" IsCheckable="True" Click="PortalIconSizeMenuItem_Click" />
                 <Separator />
-                <MenuItem Header="Compact spacing" Tag="2" IsCheckable="True" Click="PortalSpacingMenuItem_Click" />
-                <MenuItem Header="Comfortable spacing" Tag="6" IsCheckable="True" Click="PortalSpacingMenuItem_Click" />
-                <MenuItem Header="Spacious spacing" Tag="10" IsCheckable="True" Click="PortalSpacingMenuItem_Click" />
+                <MenuItem x:Name="PortalCompactSpacingMenuItem" Header="Compact spacing" Tag="2" IsCheckable="True" Click="PortalSpacingMenuItem_Click" />
+                <MenuItem x:Name="PortalComfortableSpacingMenuItem" Header="Comfortable spacing" Tag="6" IsCheckable="True" Click="PortalSpacingMenuItem_Click" />
+                <MenuItem x:Name="PortalSpaciousSpacingMenuItem" Header="Spacious spacing" Tag="10" IsCheckable="True" Click="PortalSpacingMenuItem_Click" />
             </MenuItem>
             <MenuItem x:Name="StyleMenuItem" Header="Style">
                 <MenuItem x:Name="CopyStyleMenuItem" Header="Copy Style" Click="CopyStyleMenuItem_Click" />
@@ -170,6 +180,7 @@
 
                 <ListView x:Name="ItemsList"
                           Grid.Row="1"
+                          AllowDrop="True"
                           Background="#16FFFFFF"
                           BorderThickness="0"
                           Foreground="White"
@@ -188,18 +199,20 @@
                           KeyDown="ItemsList_KeyDown">
                     <ListView.Resources>
                         <DataTemplate x:Key="PortalListItemTemplate">
-                            <Grid Margin="8,4">
+                            <Grid Margin="8,2">
                                 <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="42" />
                                     <ColumnDefinition Width="*" />
-                                    <ColumnDefinition Width="70" />
+                                    <ColumnDefinition Width="52" />
+                                    <ColumnDefinition Width="58" />
                                     <ColumnDefinition Width="118" />
                                 </Grid.ColumnDefinitions>
-                                <Image Width="32" Height="32" Source="{Binding Icon}" Stretch="Uniform" />
-                                <TextBlock Grid.Column="1" Text="{Binding Name}" Foreground="White"
+                                <TextBlock Grid.Column="0" Text="{Binding Name}" Foreground="White"
                                            VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
-                                <TextBlock Grid.Column="2" Text="{Binding Kind}" Foreground="#AFFFFFFF"
+                                <TextBlock Grid.Column="1" Text="{Binding Kind}" Foreground="#AFFFFFFF"
                                            VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
+                                <TextBlock Grid.Column="2" Text="{Binding DisplaySize}"
+                                           Foreground="#AFFFFFFF" TextAlignment="Left" Margin="0"
+                                           VerticalAlignment="Center" />
                                 <TextBlock Grid.Column="3" Text="{Binding ModifiedAt, StringFormat={}{0:yyyy-MM-dd HH:mm}}"
                                            Foreground="#88FFFFFF" VerticalAlignment="Center" />
                             </Grid>
@@ -208,6 +221,7 @@
                             <Setter Property="Width" Value="9" />
                             <Setter Property="MinWidth" Value="9" />
                             <Setter Property="Background" Value="Transparent" />
+                            <Setter Property="FocusVisualStyle" Value="{x:Null}" />
                             <Setter Property="Template">
                                 <Setter.Value>
                                     <ControlTemplate TargetType="{x:Type ScrollBar}">
@@ -274,6 +288,7 @@
                             <Setter Property="Margin" Value="4" />
                             <Setter Property="Padding" Value="4" />
                             <Setter Property="Background" Value="Transparent" />
+                            <Setter Property="FocusVisualStyle" Value="{x:Null}" />
                             <Setter Property="HorizontalContentAlignment" Value="Stretch" />
                             <Setter Property="VerticalContentAlignment" Value="Stretch" />
                             <Setter Property="ToolTip" Value="{Binding FullPath}" />
@@ -283,6 +298,7 @@
                                         <Border x:Name="ItemChrome"
                                                 Padding="{TemplateBinding Padding}"
                                                 Background="{TemplateBinding Background}"
+                                                HorizontalAlignment="Stretch"
                                                 CornerRadius="4">
                                             <ContentPresenter Content="{TemplateBinding Content}"
                                                               ContentTemplate="{TemplateBinding ContentTemplate}"
@@ -296,9 +312,17 @@
                                                 <Setter TargetName="ItemChrome" Property="Background" Value="#24FFFFFF" />
                                             </Trigger>
                                             <Trigger Property="IsSelected" Value="True">
-                                                <Setter TargetName="ItemChrome" Property="Background" Value="#FF3A5569" />
-                                                <Setter TargetName="ItemChrome" Property="CornerRadius" Value="4,4,0,0" />
+                                                <!-- The complete selected tile is drawn once by
+                                                     ExpandedItemLabelOverlay above the virtualized grid. -->
+                                                <Setter TargetName="ItemChrome" Property="Background" Value="Transparent" />
                                             </Trigger>
+                                            <MultiTrigger>
+                                                <MultiTrigger.Conditions>
+                                                    <Condition Property="IsSelected" Value="True" />
+                                                    <Condition Property="Tag" Value="List" />
+                                                </MultiTrigger.Conditions>
+                                                <Setter TargetName="ItemChrome" Property="Background" Value="#780078D7" />
+                                            </MultiTrigger>
                                         </ControlTemplate.Triggers>
                                     </ControlTemplate>
                                 </Setter.Value>
@@ -331,26 +355,17 @@
                                            VerticalAlignment="Center" />
                                     <Grid Grid.Row="1">
                                         <TextBlock x:Name="CompactItemName"
-                                                   Text="{Binding Name}"
+                                                   Text="{Binding Name, Converter={StaticResource DesktopIconLabelConverter}, ConverterParameter=78}"
+                                                   FontFamily="Microsoft YaHei UI"
                                                    Foreground="White"
                                                    FontSize="12"
                                                    TextAlignment="Center"
                                                    TextWrapping="NoWrap"
-                                                   TextTrimming="CharacterEllipsis"
+                                                   TextTrimming="None"
                                                    LineHeight="15"
-                                                   MaxHeight="18"
-                                                   VerticalAlignment="Top">
-                                            <TextBlock.Style>
-                                                <Style TargetType="TextBlock">
-                                                    <Setter Property="Visibility" Value="Visible" />
-                                                    <Style.Triggers>
-                                                        <DataTrigger Binding="{Binding IsSelected, RelativeSource={RelativeSource AncestorType={x:Type ListViewItem}}}" Value="True">
-                                                            <Setter Property="Visibility" Value="Collapsed" />
-                                                        </DataTrigger>
-                                                    </Style.Triggers>
-                                                </Style>
-                                            </TextBlock.Style>
-                                        </TextBlock>
+                                                   Height="30"
+                                                   MaxHeight="30"
+                                                   VerticalAlignment="Top" />
                                     </Grid>
                                 </Grid>
                             </Border>
@@ -364,26 +379,35 @@
                         SizeChanged="ItemLabelOverlayCanvas_SizeChanged">
                     <Border x:Name="ExpandedItemLabelOverlay"
                             Width="86"
-                            MinHeight="36"
-                            Background="Transparent"
+                            MinHeight="92"
+                            Padding="4"
+                            Background="#480078D7"
+                            CornerRadius="4"
                             Visibility="Collapsed">
                         <Grid>
-                            <Border Margin="0,34,0,0"
-                                    Background="#FF3A5569"
-                                    CornerRadius="0,0,4,4"
-                                    IsHitTestVisible="False" />
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="52" />
+                                <RowDefinition Height="Auto" />
+                            </Grid.RowDefinitions>
+                            <Image Grid.Row="0"
+                                   Width="42"
+                                   Height="42"
+                                   Source="{Binding Icon}"
+                                   Stretch="Uniform"
+                                   HorizontalAlignment="Center"
+                                   VerticalAlignment="Center"
+                                   IsHitTestVisible="False" />
                             <TextBlock x:Name="ExpandedItemLabelText"
-                                       Margin="4,0"
+                                       Grid.Row="1"
                                        Foreground="White"
                                        FontSize="12"
                                        TextAlignment="Center"
                                        TextWrapping="Wrap"
                                        TextTrimming="None"
                                        LineHeight="15"
-                                       PreviewMouseLeftButtonDown="ExpandedItemLabel_PreviewMouseLeftButtonDown"
-                                       PreviewMouseLeftButtonUp="ExpandedItemLabel_PreviewMouseLeftButtonUp" />
+                                       IsHitTestVisible="False" />
                             <TextBox x:Name="ExpandedItemRenameTextBox"
-                                     Margin="2,0"
+                                     Grid.Row="1"
                                      Visibility="Collapsed"
                                      FontSize="12"
                                      TextAlignment="Center"
