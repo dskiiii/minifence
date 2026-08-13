@@ -114,12 +114,25 @@ public sealed class ActionHistoryService
         return result;
     }
 
+    public async Task<FolderMoveResult> ExecuteFileMoveAsync(
+        string displayName,
+        Func<FolderMoveResult> operation)
+    {
+        var result = await Task.Run(operation);
+        if (result.Moves?.Count > 0)
+            RecordFileMove(displayName,
+                result.Moves.Select(move => (move.SourcePath, move.DestinationPath)),
+                result.Errors);
+        return result;
+    }
+
     public bool ExecuteRename(FolderItemService service, FolderItem item, string newName,
         out string? renamedPath, out string? error)
     {
         var originalPath = item.FullPath;
         var succeeded = service.TryRenameItem(item, newName, out renamedPath, out error);
-        if (succeeded && !string.IsNullOrWhiteSpace(renamedPath)) RecordRename(originalPath, renamedPath);
+        if (succeeded && !string.IsNullOrWhiteSpace(renamedPath) &&
+            !PathsEqual(originalPath, renamedPath)) RecordRename(originalPath, renamedPath);
         return succeeded;
     }
 
@@ -394,10 +407,25 @@ public sealed class ActionHistoryService
         var cutoff = DateTime.UtcNow - MaxAge;
         _document.Transactions = _document.Transactions
             .Where(item => item.CreatedAtUtc >= cutoff)
+            .Where(item => item.ActionType != "FileMove" ||
+                           item.Entries.Any(entry => !PathsEqual(entry.SourcePath, entry.DestinationPath)))
             .OrderByDescending(item => item.CreatedAtUtc)
             .Take(MaxTransactions)
             .OrderBy(item => item.CreatedAtUtc)
             .ToList();
+    }
+
+    internal static bool PathsEqual(string? first, string? second)
+    {
+        if (string.IsNullOrWhiteSpace(first) || string.IsNullOrWhiteSpace(second)) return false;
+        try
+        {
+            return string.Equals(Path.GetFullPath(first), Path.GetFullPath(second), StringComparison.OrdinalIgnoreCase);
+        }
+        catch
+        {
+            return string.Equals(first, second, StringComparison.OrdinalIgnoreCase);
+        }
     }
 
     private void Save()

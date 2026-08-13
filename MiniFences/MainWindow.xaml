@@ -65,6 +65,7 @@
                 Background="Transparent"
                 AllowDrop="True"
                 DragOver="Workspace_DragOver"
+                DragLeave="Workspace_DragLeave"
                 Drop="Workspace_Drop"
                 MouseLeftButtonDown="Workspace_MouseLeftButtonDown" />
         <Border x:Name="FenceSelectionOverlay"
@@ -76,5 +77,39 @@
                 BorderThickness="2"
                 CornerRadius="8"
                 IsHitTestVisible="False" />
+        <Border x:Name="DragHintBorder"
+                Visibility="Collapsed"
+                HorizontalAlignment="Left"
+                VerticalAlignment="Top"
+                Background="Transparent"
+                BorderBrush="Transparent"
+                BorderThickness="0"
+                CornerRadius="2"
+                Padding="2,1"
+                IsHitTestVisible="False"
+                SnapsToDevicePixels="True"
+                UseLayoutRounding="True"
+                Panel.ZIndex="10000">
+            <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                <Image x:Name="DragHintIcon"
+                       Width="30"
+                       Height="30"
+                       Margin="0,0,5,0"
+                       Stretch="Uniform"
+                       Opacity="0.82"
+                       RenderOptions.BitmapScalingMode="HighQuality"
+                       SnapsToDevicePixels="True"
+                       Visibility="Collapsed" />
+                <TextBlock x:Name="DragHintText"
+                           Foreground="#F2FFFFFF"
+                           FontFamily="Segoe UI"
+                           FontSize="13"
+                           FontWeight="SemiBold"
+                           TextOptions.TextFormattingMode="Display"
+                           TextOptions.TextRenderingMode="Grayscale"
+                           VerticalAlignment="Center"
+                           Text="→ Move to target" />
+            </StackPanel>
+        </Border>
     </Grid>
 </Window>

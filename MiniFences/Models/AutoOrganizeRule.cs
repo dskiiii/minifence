@@ -4,7 +4,7 @@ public sealed class AutoOrganizeRule
 {
     public string Id { get; set; } = Guid.NewGuid().ToString("N");
     public string Name { get; set; } = "New rule";
-    public bool IsEnabled { get; set; } = true;
+    public bool IsEnabled { get; set; }
     public int Priority { get; set; } = 100;
     public string TargetFenceId { get; set; } = "";
     public string NamePattern { get; set; } = "";

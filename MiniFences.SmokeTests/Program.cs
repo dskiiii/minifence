@@ -19,6 +19,9 @@ try
     TestLocalization();
     TestDesktopDoubleClickTracker();
     TestDesktopDragData();
+    TestNativeShellDragSourceHelper(root);
+    TestSeparatedInternalDragFeedback();
+    TestDragHintPlacement();
     TestSettingsNavigation();
     TestColorPickerDialog();
     TestTabMergeRules();
@@ -26,13 +29,18 @@ try
     TestTabGroupPresentationState();
     TestHeaderDragEdgeTracking();
     TestCustomGridAndPageHotkeys();
+    TestFenceItemMultiSelectionPresentation();
     TestTaskbarWorkAreaClamp();
+    TestHostedDesktopDpiBounds();
+    TestDesktopHostCompatibilityMode();
+    TestShowDesktopCompatibilityRecovery();
     Assert(MainWindow.GetFenceLayoutHeight(new FenceConfig { Height = 600, IsCollapsed = true }) == 34,
         "Startup layout clamping must use the visible title height for a collapsed Fence.");
     TestFenceLayout();
     TestPageDeletion(root);
     TestFolderItemLoadingAndMove(root);
     TestShellIconLoading(root);
+    TestSystemDesktopShellItems();
     TestShellOpenRequests(root);
     TestShellContextMenuPathSelection(root);
     TestShellContextMenuHostCommands();
@@ -79,6 +87,225 @@ static void TestShellIconLoading(string root)
         .GetAwaiter().GetResult();
     Assert(loadedIcon is System.Windows.Media.Imaging.BitmapSource,
         "Shell file-association icons must load as a real bitmap on the STA icon worker.");
+}
+
+static void TestDragHintPlacement()
+{
+    Assert(!MainWindow.ShouldUseFullDesktopWindowRegion(false, false, true) &&
+           MainWindow.ShouldUseFullDesktopWindowRegion(true, false, false) &&
+           !MainWindow.ShouldUseFullDesktopWindowRegion(false, false, false),
+        "The independent drag image must not expand the Explorer-hosted desktop input region.");
+    Assert(MainWindow.ShouldShowCustomDragFeedback(false) &&
+           !MainWindow.ShouldShowCustomDragFeedback(true) &&
+           MainWindow.ShouldIgnoreIntermediateDragHide(true) &&
+           !MainWindow.ShouldIgnoreIntermediateDragHide(false) &&
+           MainWindow.ShouldClearDragFeedback(true, true) &&
+           MainWindow.ShouldClearDragFeedback(false, false) &&
+           !MainWindow.ShouldClearDragFeedback(false, true),
+        "MiniFences must defer to a Shell drag image, use custom feedback only as a fallback, and clear it on Escape.");
+    Assert(MainWindow.ShouldUseCustomDragImage(true, false) &&
+           MainWindow.ShouldUseCustomDragImage(true, true) &&
+           MainWindow.ShouldUseCustomDragImage(false, false) &&
+           !MainWindow.ShouldUseCustomDragImage(false, true),
+        "Internal drags use MiniFences feedback; external Explorer drags retain their single native image.");
+    Assert(MainWindow.ShouldUpdateDragFeedbackFromMouseMessage(true, 0x0200) &&
+           !MainWindow.ShouldUpdateDragFeedbackFromMouseMessage(false, 0x0200) &&
+           !MainWindow.ShouldUpdateDragFeedbackFromMouseMessage(true, 0x0201),
+        "Every real mouse-move hook message must synchronously reposition the active drag image.");
+    Assert(!MainWindow.ShouldEndShellDragForScreenPoint(true) &&
+           MainWindow.ShouldEndShellDragForScreenPoint(false),
+        "Child-control DragLeave events must not clear feedback; a real MiniFences surface exit must clear it immediately.");
+
+    foreach (var dpi in new uint[] { 96, 120, 144, 168, 192 })
+    {
+        var scale = dpi / 96d;
+        var cursor = new System.Windows.Point(1462, 461);
+        var placement = DragFeedbackWindow.CalculatePhysicalPlacement(
+            cursor,
+            new System.Windows.Size(200 * scale, 32 * scale),
+            dpi,
+            iconVisible: true);
+        Assert(Math.Abs(placement.X + DragFeedbackWindow.SourceVisualWidthDips * scale / 2 - cursor.X) < 0.01 &&
+               Math.Abs(placement.Y + DragFeedbackWindow.IconCenterYDips * scale - cursor.Y) < 0.01,
+            $"Drag image hotspot must remain on the physical pointer at {dpi * 100 / 96}% display scaling.");
+    }
+
+    var secondaryMonitorPlacement = DragFeedbackWindow.CalculatePhysicalPlacement(
+        new System.Windows.Point(-900, 700),
+        new System.Windows.Size(300, 48),
+        144,
+        iconVisible: true);
+    Assert(Math.Abs(secondaryMonitorPlacement.X + DragFeedbackWindow.SourceVisualWidthDips * 1.5 / 2 + 900) < 0.01 &&
+           Math.Abs(secondaryMonitorPlacement.Y + DragFeedbackWindow.IconCenterYDips * 1.5 - 700) < 0.01 &&
+           MainWindow.DragHintRefreshIntervalMilliseconds <= 16,
+        "Drag image positioning must retain negative virtual-screen coordinates on a secondary monitor.");
+
+    Exception? windowFailure = null;
+    var windowThread = new Thread(() =>
+    {
+        try
+        {
+            var feedbackWindow = new DragFeedbackWindow();
+            feedbackWindow.SetTargetText("Move to Files");
+            Assert(!feedbackWindow.ShowActivated && !feedbackWindow.ShowInTaskbar &&
+                   feedbackWindow.IsHitTestVisible == false &&
+                   feedbackWindow.TargetText?.Replace("\n", " ").StartsWith("Move to", StringComparison.Ordinal) == true &&
+                   DragFeedbackWindow.LabelWidthDips == 86,
+                "Drag feedback must use one non-activating, click-through top-level window.");
+            feedbackWindow.Close();
+        }
+        catch (Exception ex)
+        {
+            windowFailure = ex;
+        }
+    });
+    windowThread.SetApartmentState(ApartmentState.STA);
+    windowThread.Start();
+    windowThread.Join();
+    if (windowFailure != null) throw windowFailure;
+}
+
+static void TestNativeShellDragSourceHelper(string root)
+{
+    Assert(ShellDragSourceImage.DragLabelWidth == 86 && ShellDragSourceImage.DragLabelMaxLines == 2,
+        "The native drag label must match the desktop cell width and use at most two lines.");
+    Exception? failure = null;
+    var initialized = false;
+    var thread = new Thread(() =>
+    {
+        try
+        {
+            var file = Path.Combine(root, "native-shell-drag.txt");
+            File.WriteAllText(file, "native Shell drag image");
+            using var data = new ShellCompatibleDataObject();
+            DesktopDragData.Set(data, [file], looseIcon: false, file);
+            var pixels = new byte[] { 255, 160, 40, 255 };
+            var icon = System.Windows.Media.Imaging.BitmapSource.Create(
+                1, 1, 96, 96, System.Windows.Media.PixelFormats.Bgra32, null, pixels, 4);
+            icon.Freeze();
+            initialized = ShellDragSourceImage.TryInitialize(data, icon, "native-shell-drag.txt") &&
+                          DesktopDragData.HasNativeShellImage(data);
+        }
+        catch (Exception ex) { failure = ex; }
+    });
+    thread.SetApartmentState(ApartmentState.STA);
+    thread.Start();
+    thread.Join();
+    if (failure != null) throw new InvalidOperationException("Native Shell drag helper test failed.", failure);
+    Assert(initialized, "IDragSourceHelper must store its private formats in MiniFences' COM data object.");
+}
+
+/* Obsolete combined-window regression retained for history.
+static void TestCombinedInternalDragFeedback()
+{
+    Exception? failure = null;
+    var thread = new Thread(() =>
+    {
+        try
+        {
+            var feedback = new DragFeedbackWindow();
+            feedback.SetIcon(MiniFences.Services.FolderItemService.GetTypeIcon(".txt"));
+            feedback.SetTargetText("MiniFences-win-x64-0.23.100-showdesktop-zorder-fix", expanded: true);
+            feedback.EnsureShown();
+            feedback.UpdateLayout();
+            var sourceOnlyWidth = feedback.FeedbackContentWidthForTesting;
+            feedback.SetDropTargetText("移动到 新横向");
+            feedback.UpdateLayout();
+            feedback.UpdatePosition();
+            Assert(feedback.HasSingleCombinedFeedbackVisualForTesting,
+                "An internal drag must show its source and move target in one feedback window.");
+            Assert(feedback.UsesGeometricallyCenteredDropArrowForTesting,
+                "The move-target arrow must use a geometric midline instead of a font baseline.");
+            Assert(feedback.IsSourceNameVisibleWithDropTargetForTesting,
+                "A visible move target must supplement the dragged filename, never replace it.");
+            Assert(feedback.IsSourceIconVisibleForTesting &&
+                   Math.Abs(feedback.FeedbackContentWidthForTesting - sourceOnlyWidth) < 0.01,
+                "Entering a folder target must retain the source icon without restructuring the feedback window.");
+            Assert(feedback.NativeBoundsCoverContentForTesting,
+                "The native drag-feedback window must expand to contain the source icon and folder-target prompt.");
+            feedback.SetDropTargetText(null);
+            Assert(feedback.DropTargetText == null && feedback.TargetText != null &&
+                   !feedback.IsSourceNameVisibleWithDropTargetForTesting,
+                "Leaving a folder hot zone must synchronously remove only the move target and retain source feedback.");
+            feedback.Close();
+        }
+        catch (Exception ex) { failure = ex; }
+    });
+    thread.SetApartmentState(ApartmentState.STA);
+    thread.Start();
+    thread.Join();
+    if (failure != null) throw new InvalidOperationException("Combined internal drag feedback test failed.", failure);
+}
+
+*/
+static void TestSeparatedInternalDragFeedback()
+{
+    Exception? failure = null;
+    var thread = new Thread(() =>
+    {
+        try
+        {
+            var sourceFeedback = new DragFeedbackWindow();
+            sourceFeedback.SetIcon(FolderItemService.GetTypeIcon(".txt"));
+            sourceFeedback.SetTargetText("Dragged item", expanded: false);
+            sourceFeedback.EnsureShown();
+            sourceFeedback.UpdateLayout();
+            var sourceHandle = sourceFeedback.NativeHandleForTesting;
+            var sourceWidth = sourceFeedback.FeedbackContentWidthForTesting;
+
+            var targetFeedback = new DragTargetHintWindow();
+            targetFeedback.ShowTarget("Move to target folder");
+            Assert(sourceHandle != IntPtr.Zero && targetFeedback.NativeHandleForTesting != IntPtr.Zero &&
+                   sourceHandle != targetFeedback.NativeHandleForTesting,
+                "The folder target prompt must use a separate native window from the dragged source icon.");
+            Assert(sourceFeedback.IsSourceIconVisibleForTesting &&
+                   Math.Abs(sourceFeedback.FeedbackContentWidthForTesting - sourceWidth) < 0.01,
+                "Showing a folder target must not resize or hide the dragged source icon window.");
+
+            targetFeedback.HideTarget();
+            Assert(sourceFeedback.IsSourceIconVisibleForTesting &&
+                   sourceFeedback.NativeHandleForTesting == sourceHandle,
+                "Leaving a folder target must preserve the original source icon HWND.");
+            targetFeedback.Close();
+            sourceFeedback.Close();
+        }
+        catch (Exception ex) { failure = ex; }
+    });
+    thread.SetApartmentState(ApartmentState.STA);
+    thread.Start();
+    thread.Join();
+    if (failure != null) throw new InvalidOperationException("Separated internal drag feedback test failed.", failure);
+}
+
+static void TestSystemDesktopShellItems()
+{
+    const string thisPc = "shell:::{20D04FE0-3AEA-1069-A2D8-08002B30309D}";
+    const string recycleBin = "shell:::{645FF040-5081-101B-9F08-00AA002F954E}";
+    Assert(FolderItemService.IsShellNamespacePath(thisPc) &&
+           !FolderItemService.IsShellNamespacePath(@"C:\Users\Public\Desktop"),
+        "System desktop icons must be distinguished from file-system entries.");
+    Assert(FolderItemService.IsRecycleBinNamespacePath(recycleBin) &&
+           !FolderItemService.IsRecycleBinNamespacePath(thisPc),
+        "The Recycle Bin must remain distinguishable as a Shell drop target.");
+    Assert(FolderItemService.ShouldShowDesktopShellItem(0, false) &&
+           !FolderItemService.ShouldShowDesktopShellItem(1, true) &&
+           FolderItemService.ShouldShowDesktopShellItem(null, true),
+        "Windows HideDesktopIcons values must control which system icons MiniFences recreates.");
+
+    var requests = new List<ProcessStartInfo>();
+    var service = new FolderItemService(startInfo => requests.Add(startInfo));
+    Assert(service.TryOpen(new FolderItem { Name = "This PC", FullPath = thisPc }, out var error),
+        $"System desktop icon should open through Explorer: {error}");
+    Assert(requests.Single().FileName == "explorer.exe" &&
+           requests.Single().Arguments == thisPc &&
+           requests.Single().UseShellExecute,
+        "System desktop icons must launch their exact Shell namespace.");
+    Assert(!service.TryRenameItem(
+            new FolderItem { Name = "This PC", FullPath = thisPc },
+            "Renamed",
+            out _,
+            out _),
+        "System desktop icons must not enter the file-system rename path.");
 }
 
 static void TestActionHistory(string root)
@@ -238,6 +465,89 @@ static void TestDisplayLayouts(string root)
         "Swap monitor contents must preserve relative placement while cycling Fences to the next monitor.");
 }
 
+static void TestHostedDesktopDpiBounds()
+{
+    var scaled4K = MainWindow.GetHostedLogicalSize(3840, 2160, 1.5, 1.5);
+    Assert(Math.Abs(scaled4K.Width - 2560) < 0.01 &&
+           Math.Abs(scaled4K.Height - 1440) < 0.01,
+        "A 4K Explorer desktop at 150% scaling must retain its complete logical workspace.");
+
+    var invalidDpi = MainWindow.GetHostedLogicalSize(3840, 2160, double.NaN, 0);
+    Assert(invalidDpi.Width == 3840 && invalidDpi.Height == 2160,
+        "Invalid DPI values must safely fall back to a 1:1 desktop workspace.");
+
+    var hostedPoint = MainWindow.ConvertClientPhysicalPixelsToWorkspaceDips(
+        new System.Windows.Point(62, 693),
+        1.25,
+        1.25,
+        new System.Windows.Point(0, 0));
+    Assert(Math.Abs(hostedPoint.X - 49.6) < 0.01 &&
+           Math.Abs(hostedPoint.Y - 554.4) < 0.01,
+        "Explorer-child hit testing must convert physical ScreenToClient pixels to WPF DIPs at 125% scaling.");
+}
+
+static void TestDesktopHostCompatibilityMode()
+{
+    Assert(!MainWindow.ShouldUseTopLevelDesktopFallback(new Version(10, 0, 26100, 1)),
+        "Stable Windows 11 builds before 26200 should retain Explorer child hosting.");
+    Assert(MainWindow.ShouldUseTopLevelDesktopFallback(new Version(10, 0, 26200, 5516)),
+        "Windows 11 build 26200 and later must use the top-level layered-window compatibility path.");
+    Assert(MainWindow.ShouldUseTopLevelDesktopFallback(new Version(10, 0, 19045), "top-level") &&
+           !MainWindow.ShouldUseTopLevelDesktopFallback(new Version(10, 0, 26200), "explorer"),
+        "The diagnostic desktop-host override must take precedence over automatic OS detection.");
+    Assert(MainWindow.NeedsTopLevelDesktopOwnerAttachment(true, false, new IntPtr(1), new IntPtr(2)) &&
+           !MainWindow.NeedsTopLevelDesktopOwnerAttachment(true, false, new IntPtr(2), new IntPtr(2)) &&
+           !MainWindow.NeedsTopLevelDesktopOwnerAttachment(true, true, IntPtr.Zero, new IntPtr(2)) &&
+           !MainWindow.NeedsTopLevelDesktopOwnerAttachment(false, false, IntPtr.Zero, new IntPtr(2)),
+        "Top-level compatibility mode must attach Explorer ownership once and preserve it while healthy.");
+    Assert(MainWindow.IsPointAtTaskbarShowDesktopEdge(3835, 2100, 0, 2070, 3840, 2160, 32) &&
+           !MainWindow.IsPointAtTaskbarShowDesktopEdge(3700, 2100, 0, 2070, 3840, 2160, 32) &&
+           MainWindow.IsPointAtTaskbarShowDesktopEdge(10, 1075, 0, 0, 64, 1080, 32),
+        "The taskbar Show Desktop edge must be recognized on horizontal and vertical taskbars.");
+    Assert(MainWindow.ShouldHandleDesktopDoubleClick(true, true) &&
+           !MainWindow.ShouldHandleDesktopDoubleClick(true, false) &&
+           !MainWindow.ShouldHandleDesktopDoubleClick(false, true),
+        "Closing MiniFences must disable desktop double-click restoration until desktop integration is reopened.");
+    Assert(MainWindow.ShouldEnterShowDesktopFromDesktopForeground(false, false, true) &&
+           MainWindow.ShouldEnterShowDesktopFromDesktopForeground(false, false, false) &&
+           !MainWindow.ShouldEnterShowDesktopFromDesktopForeground(false, true, false),
+        "Explorer foreground must enter protection without changing the stable owner relationship.");
+    Assert(!MainWindow.ShouldExitShowDesktopForNormalForeground(true, 799, 800) &&
+           MainWindow.ShouldExitShowDesktopForNormalForeground(true, 800, 800),
+        "Stale normal-window events must be ignored during the initial Shell animation only.");
+    Assert(MainWindow.ShouldRepairDesktopLayerAfterNormalForeground(false, false) &&
+           !MainWindow.ShouldRepairDesktopLayerAfterNormalForeground(true, false) &&
+           !MainWindow.ShouldRepairDesktopLayerAfterNormalForeground(false, true),
+        "Every normal foreground activation must repair post-restore z-order drift once no transition owns the layer.");
+}
+
+static void TestShowDesktopCompatibilityRecovery()
+{
+    Assert(!MainWindow.ShouldRecoverTopLevelDesktopWindow(false, false, false, true, 2) &&
+           !MainWindow.ShouldRecoverTopLevelDesktopWindow(true, true, false, true, 2),
+        "Explorer-child mode and application shutdown must not run top-level desktop recovery.");
+    Assert(MainWindow.ShouldRecoverTopLevelDesktopWindow(true, false, false, false, 0) &&
+           MainWindow.ShouldRecoverTopLevelDesktopWindow(true, false, true, true, 0) &&
+           MainWindow.ShouldRecoverTopLevelDesktopWindow(true, false, true, false, 2),
+        "The Win11 compatibility window must recover after hide, minimize, or Shell DWM cloak.");
+    Assert(!MainWindow.ShouldRecoverTopLevelDesktopWindow(true, false, true, false, 0),
+        "A healthy visible compatibility window must not be unnecessarily restored.");
+    Assert(MainWindow.ShouldBlockTopLevelDesktopHide(true, false, 0x0080) &&
+           !MainWindow.ShouldBlockTopLevelDesktopHide(false, false, 0x0080) &&
+           !MainWindow.ShouldBlockTopLevelDesktopHide(true, true, 0x0080) &&
+           !MainWindow.ShouldBlockTopLevelDesktopHide(true, false, 0x0010),
+        "Show Desktop hide requests must be blocked before the compatibility window disappears.");
+    Assert(MainWindow.ShouldBlockUnsolicitedDesktopZOrderChange(true, false, false, false, 0) &&
+           !MainWindow.ShouldBlockUnsolicitedDesktopZOrderChange(true, false, false, true, 0) &&
+           !MainWindow.ShouldBlockUnsolicitedDesktopZOrderChange(true, false, true, false, 0) &&
+           !MainWindow.ShouldBlockUnsolicitedDesktopZOrderChange(true, false, false, false, 0x0004),
+        "Shell z-order notifications must be suppressed unless they come from MiniFences or an explicit topmost mode.");
+    Assert(MainWindow.IsDesktopLayerPlacementStable(new IntPtr(2), new IntPtr(2)) &&
+           !MainWindow.IsDesktopLayerPlacementStable(IntPtr.Zero, new IntPtr(2)) &&
+           !MainWindow.IsDesktopLayerPlacementStable(new IntPtr(2), new IntPtr(3)),
+        "Desktop adjacency checks must be idempotent before a native z-order update.");
+}
+
 static void TestLargeFolderVirtualization(string root)
 {
     var folder = Path.Combine(root, "large-folder");
@@ -290,6 +600,10 @@ static void TestAdvancedAutoOrganizeRules(string root)
     Directory.CreateDirectory(folder);
     var exact = Path.Combine(folder, "Budget.xlsx");
     File.WriteAllText(exact, "budget");
+    Assert(!AutoOrganizerService.RuleMatches(new AutoOrganizeRule(), exact),
+        "An enabled rule with no criteria must not capture every new desktop item.");
+    Assert(!new AutoOrganizeRule().IsEnabled,
+        "New auto-organize rules must remain disabled until the user configures them.");
     Assert(AutoOrganizerService.RuleMatches(new AutoOrganizeRule { ExactNames = "README; Budget.xlsx" }, exact),
         "Auto-organize rules must support exact file names.");
     Assert(!AutoOrganizerService.RuleMatches(new AutoOrganizeRule { ExactNames = "Other.xlsx" }, exact),
@@ -299,6 +613,9 @@ static void TestAdvancedAutoOrganizeRules(string root)
     Assert(AutoOrganizerService.RuleMatches(
             new AutoOrganizeRule { ShortcutTargetPattern = "https://company.example/*" }, shortcut),
         "Auto-organize rules must match Internet shortcut targets.");
+    Assert(AutoOrganizerService.RuleMatches(new AutoOrganizeRule { FoldersOnly = true }, folder) &&
+           !AutoOrganizerService.RuleMatches(new AutoOrganizeRule { FoldersOnly = true }, exact),
+        "A folders-only rule may use that option as its sole effective criterion.");
 }
 
 static void TestColorPickerDialog()
@@ -416,6 +733,13 @@ static void TestSettingsNavigation()
         "Every Settings navigation entry should resolve to its own panel.");
     Assert(SettingsWindow.ResolvePanelName("Personalization") == null,
         "The removed combined Personalization page must not remain addressable.");
+    Assert(SettingsWindow.GetWelcomeVisibilityActionKey(true) == "DisableMiniFences" &&
+           SettingsWindow.GetWelcomeVisibilityActionKey(false) == "EnableMiniFences",
+        "The Welcome action must retain its open/close wording while controlling complete Fence visibility.");
+    Assert(MainWindow.IsMiniFencesEnabledState(false, true) &&
+           !MainWindow.IsMiniFencesEnabledState(true, true) &&
+           !MainWindow.IsMiniFencesEnabledState(false, false),
+        "MiniFences is open only when Fences are visible and desktop-icon integration is enabled.");
     Assert(SettingsWindow.GetBottomRollupOptionAvailability(true, false, true, true) ==
            (false, false, false),
         "Bottom roll-up options must all be disabled when automatic edge roll-up is off.");
@@ -426,8 +750,82 @@ static void TestSettingsNavigation()
         "All three bottom-edge options must remain parallel whenever automatic edge roll-up is enabled.");
 }
 
+static void TestFenceItemMultiSelectionPresentation()
+{
+    Assert(new FolderItem { Kind = "Folder", Size = 0 }.DisplaySize == "—" &&
+           new FolderItem { Kind = "TXT", Size = 512 * 1024 }.DisplaySize == "0.5 MB" &&
+           new FolderItem { Kind = "ZIP", Size = 128L * 1024 * 1024 }.DisplaySize == "128 MB" &&
+           new FolderItem { Kind = "ISO", Size = 1280L * 1024 * 1024 }.DisplaySize == "1.25 GB",
+        "List sizes must use MB below one GB, GB at and above one GB, and a dash for folders.");
+    Assert(!MainWindow.ShouldCloseWpfContextMenuFromLowLevelMouseHook(),
+        "The low-level desktop hook must not close a WPF context menu before a submenu Click event is delivered.");
+    Assert(FenceControl.ShouldShowExpandedSelectionLabel(1) &&
+           !FenceControl.ShouldShowExpandedSelectionLabel(0) &&
+           !FenceControl.ShouldShowExpandedSelectionLabel(2),
+        "The rename overlay is only eligible for one selected item; ordinary selection keeps the compact filename layout.");
+    Assert(FenceControl.ShouldScheduleInlineRename(true, true, System.Windows.Input.ModifierKeys.None),
+        "A second unmodified click on a selected filename may start inline rename.");
+    Assert(!FenceControl.ShouldScheduleInlineRename(true, false, System.Windows.Input.ModifierKeys.Control) &&
+           !FenceControl.ShouldScheduleInlineRename(true, true, System.Windows.Input.ModifierKeys.Control) &&
+           !FenceControl.ShouldScheduleInlineRename(true, true, System.Windows.Input.ModifierKeys.Shift),
+        "Ctrl or Shift selection clicks must never start inline rename.");
+    Exception? listViewFailure = null;
+    var listViewThread = new Thread(() =>
+    {
+        try
+        {
+            var listFence = new FenceControl(new FenceConfig
+            {
+                Title = "Downloads",
+                FolderPath = Path.GetTempPath(),
+                Kind = FenceConfig.DesktopGroupKind,
+                PortalViewMode = "List"
+            });
+            listFence.ApplyPortalViewForTesting();
+            Assert(listFence.IsListViewModeForTesting && !listFence.ListTemplateContainsIconsForTesting,
+                "Fence list view must use a persisted, genuinely icon-free row template.");
+            listFence.SelectViewModeForTesting("Icons");
+            Assert(listFence.Config.PortalViewMode == "Icons" && !listFence.IsListViewModeForTesting,
+                "The View > Icons submenu click must update the Fence configuration and template.");
+            listFence.SelectViewModeForTesting("List");
+            Assert(listFence.Config.PortalViewMode == "List" && listFence.IsListViewModeForTesting,
+                "The View > List submenu click must update the Fence configuration and template.");
+            listFence.StopForTesting();
+        }
+        catch (Exception ex) { listViewFailure = ex; }
+    });
+    listViewThread.SetApartmentState(ApartmentState.STA);
+    listViewThread.Start();
+    listViewThread.Join();
+    if (listViewFailure != null) throw new InvalidOperationException("Fence list-view test failed.", listViewFailure);
+}
+
 static void TestDesktopDragData()
 {
+    var formattedLabel = DesktopIconLabelConverter.FormatTwoLines(
+        "MiniFences-win-x64-0.23.80-source-verification", 76);
+    var expandedLabel = DesktopIconLabelConverter.FormatAllLines(
+        "MiniFences-win-x64-0.23.80-source-verification", 76);
+    var compactLines = formattedLabel.Split('\n');
+    var expandedLines = expandedLabel.Split('\n');
+    Assert(expandedLines.Length > 2 && compactLines[0] == expandedLines[0],
+        "Selected and compact labels must share the same first-line layout; selection may only reveal later lines.");
+    var hyphenatedName = "MiniFences-source-0";
+    var hyphenatedExpanded = DesktopIconLabelConverter.FormatAllLines(hyphenatedName, 76);
+    Assert(hyphenatedExpanded.Replace("\n", string.Empty, StringComparison.Ordinal) == hyphenatedName,
+        "Wrapping a desktop filename must preserve every hyphen and underscore at line boundaries.");
+    var hyphenatedCompact = DesktopIconLabelConverter.FormatTwoLines(hyphenatedName, 76);
+    Assert(hyphenatedCompact.StartsWith("MiniFences-\n", StringComparison.Ordinal),
+        "A preferred wrap after a hyphen must keep the hyphen visible on the first line.");
+    Assert(formattedLabel.Count(character => character == '\n') == 1 && formattedLabel.EndsWith('…'),
+        "Long desktop labels must be deterministically formatted into exactly two lines with a final ellipsis.");
+    var suppressedRenames = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { @"C:\Desktop\Renamed.txt" };
+    Assert(!MainWindow.ShouldQueueAutoOrganization(@"c:\desktop\renamed.txt", suppressedRenames) &&
+           !MainWindow.ShouldQueueAutoOrganization(@"C:\Desktop\Renamed.txt", suppressedRenames),
+        "A user-initiated desktop rename must suppress duplicate automatic-organization watcher events during the rename window.");
+    suppressedRenames.Clear();
+    Assert(MainWindow.ShouldQueueAutoOrganization(@"C:\Desktop\Renamed.txt", suppressedRenames),
+        "Automatic organization must resume after the desktop rename suppression window expires.");
     var paths = new[] { @"C:\Desktop\one.txt", @"C:\Desktop\two.txt" };
     var data = new System.Windows.DataObject();
     DesktopDragData.Set(data, paths, looseIcon: true, paths[0]);
@@ -436,8 +834,39 @@ static void TestDesktopDragData()
     Assert(data.GetDataPresent(System.Windows.DataFormats.FileDrop) &&
            data.GetData(System.Windows.DataFormats.FileDrop) is string[] fileDrop && fileDrop.SequenceEqual(paths),
         "Desktop drags should expose standard Shell FileDrop data for browser and chat uploads.");
+    var collectionData = new System.Windows.DataObject();
+    var collection = new System.Collections.Specialized.StringCollection { paths[0], paths[1] };
+    collectionData.SetData(System.Windows.DataFormats.FileDrop, collection);
+    Assert(DesktopDragData.TryGetPaths(collectionData, out var collectionPaths) &&
+           collectionPaths.SequenceEqual(paths),
+        "Explorer file drops must accept both array and StringCollection path representations.");
     Assert(DesktopDragData.IsLooseIconDrag(data) && DesktopDragData.GetAnchorPath(data) == paths[0],
         "Loose icon drags should preserve their origin and anchor item.");
+    Assert(data.GetDataPresent(DesktopDragData.SourceFormat),
+        "Every MiniFences drag must identify its source consistently.");
+    Assert(DesktopDragData.IsMiniFencesSource(data),
+        "Internal drags must be identifiable without repeatedly querying the COM data object.");
+    Assert(!DesktopDragData.HasShellDragImage(data),
+        "A data object without Shell metadata must remain eligible for fallback feedback.");
+    var shellData = new System.Windows.DataObject();
+    shellData.SetData("DragWindow", new byte[] { 1, 0, 0, 0 });
+    Assert(DesktopDragData.HasShellDragImage(shellData),
+        "Shell drag-image metadata must be detected so Windows can own native drag feedback.");
+    var nativeData = new System.Windows.DataObject();
+    nativeData.SetData(DesktopDragData.NativeShellImageFormat, true);
+    Assert(DesktopDragData.HasShellDragImage(nativeData),
+        "A successful internal native Shell image must suppress custom follower feedback.");
+    var guaranteedIcon = FolderItemService.GetGuaranteedPathIcon(@"Z:\path-that-does-not-exist\unknown.weird");
+    Assert(guaranteedIcon != null,
+        "Every drag path must have a visible fallback icon even when the Shell icon handler returns nothing.");
+    var targetData = new System.Windows.DataObject();
+    Assert(!DesktopDragData.RefreshShellDragImageState(targetData) &&
+           !DesktopDragData.HasShellDragImage(targetData),
+        "A Shell target-helper session without drag-image formats must keep fallback feedback available.");
+    Assert(MainWindow.ShouldPreserveLooseSelectionOnPointerDown(true, 2, System.Windows.Input.ModifierKeys.None) &&
+           !MainWindow.ShouldPreserveLooseSelectionOnPointerDown(true, 2, System.Windows.Input.ModifierKeys.Control) &&
+           !MainWindow.ShouldPreserveLooseSelectionOnPointerDown(false, 2, System.Windows.Input.ModifierKeys.None),
+        "Starting a drag on a selected loose icon must preserve multi-selection only without a new selection modifier.");
     Assert(!DesktopDragData.ShouldCancelExplorerDesktopDrop(System.Windows.DragDropKeyStates.LeftMouseButton, true) &&
            DesktopDragData.ShouldCancelExplorerDesktopDrop(System.Windows.DragDropKeyStates.None, true) &&
            !DesktopDragData.ShouldCancelExplorerDesktopDrop(System.Windows.DragDropKeyStates.None, true, overMiniFencesSurface: true) &&
@@ -1154,6 +1583,20 @@ static void TestFenceLayout()
 
 static void TestDesktopDoubleClickTracker()
 {
+    Assert(MainWindow.IsDesktopBlankClick(true, false, false, true) &&
+           !MainWindow.IsDesktopBlankClick(true, false, true, true) &&
+           !MainWindow.IsDesktopBlankClick(true, true, false, true),
+        "The global mouse hook must not clear loose-icon selection when the click is on that desktop icon.");
+    Assert(MainWindow.ShouldClearSelectionForGlobalClick(false, false, false) &&
+           MainWindow.ShouldClearSelectionForGlobalClick(false, true, false) &&
+           !MainWindow.ShouldClearSelectionForGlobalClick(false, true, true) &&
+           !MainWindow.ShouldClearSelectionForGlobalClick(true, false, false),
+        "Clicks in another window or blank desktop must clear selection, while real MiniFences/desktop items must retain it.");
+    Assert(!MainWindow.IsDesktopBlankClick(true, false, true, true),
+        "A managed loose desktop icon hit must never be reclassified as blank desktop by the global mouse hook.");
+    Assert(MainWindow.IsPointInsideLooseIconBounds(new System.Windows.Point(50, 60), 8, 8, 86, 92) &&
+           !MainWindow.IsPointInsideLooseIconBounds(new System.Windows.Point(120, 60), 8, 8, 86, 92),
+        "The global click classifier must recognize the WPF loose icon's own workspace bounds.");
     var tracker = new DesktopDoubleClickTracker();
     Assert(!tracker.RegisterClick(true, 100, 100, 1_000), "First blank-desktop click should only start a candidate.");
     Assert(tracker.RegisterClick(true, 103, 104, 1_300), "Nearby blank-desktop clicks within the interval should trigger.");
@@ -1287,6 +1730,13 @@ static void TestFolderItemLoadingAndMove(string root)
     Assert(renamedTextPath.EndsWith("renamed-note.txt", StringComparison.OrdinalIgnoreCase), "File rename should preserve extension when omitted.");
     Assert(!File.Exists(textPath), "Original file path should be gone after rename.");
     textPath = renamedTextPath;
+    var versionedArchivePath = Path.Combine(source, "MiniFences-0.23.12.zip");
+    File.WriteAllText(versionedArchivePath, "zip-test");
+    var versionedArchive = new FolderItem { Name = "MiniFences-0.23.12", FullPath = versionedArchivePath };
+    Assert(service.TryRenameItem(versionedArchive, "MiniFences-0.23.13", out var renamedArchivePath, out renameError) &&
+           renamedArchivePath != null && renamedArchivePath.EndsWith("MiniFences-0.23.13.zip", StringComparison.OrdinalIgnoreCase) &&
+           File.Exists(renamedArchivePath),
+        "Renaming a versioned file label must preserve its hidden .zip extension; version dots are not an extension.");
 
     var folderItem = new FolderItem { Name = "folder", FullPath = folderPath };
     Assert(service.TryRenameItem(folderItem, "renamed-folder", out var renamedFolderPath, out renameError), $"Folder rename should succeed: {renameError}");
@@ -1390,6 +1840,8 @@ static void TestFenceControlBindingAndLayout(string root)
         FenceControl? collapsedControl = null;
         try
         {
+            SynchronizationContext.SetSynchronizationContext(
+                new DispatcherSynchronizationContext(Dispatcher.CurrentDispatcher));
             var config = new FenceConfig
             {
                 Id = "control-test",
@@ -1408,6 +1860,43 @@ static void TestFenceControlBindingAndLayout(string root)
             Assert(loadedItems.Any(item => item.FullPath == filePath), "Fence control should bind the real file FullPath.");
             Assert(loadedItems.Any(item => item.FullPath == childFolder), "Fence control should bind the real folder FullPath.");
             Assert(!control.IsPortalNavigationVisibleForTesting, "Folder Portal root should keep the redundant navigation bar hidden.");
+            var previewDropSource = Path.Combine(root, "preview-drop-source.txt");
+            var previewDropTarget = Path.Combine(folder, "preview-drop-source.txt");
+            File.WriteAllText(previewDropSource, "preview drop routing");
+            var previewDropData = new System.Windows.DataObject();
+            previewDropData.SetData(System.Windows.DataFormats.FileDrop, new[] { previewDropSource });
+            var itemsList = (System.Windows.Controls.ListView)control.FindName("ItemsList");
+            control.Measure(new System.Windows.Size(420, 320));
+            control.Arrange(new System.Windows.Rect(0, 0, 420, 320));
+            control.UpdateLayout();
+            var dragEventConstructor = typeof(System.Windows.DragEventArgs)
+                .GetConstructors(System.Reflection.BindingFlags.Instance |
+                                 System.Reflection.BindingFlags.NonPublic |
+                                 System.Reflection.BindingFlags.Public)
+                .Single();
+            var previewDropEvent = (System.Windows.DragEventArgs)dragEventConstructor.Invoke([
+                previewDropData,
+                System.Windows.DragDropKeyStates.LeftMouseButton,
+                System.Windows.DragDropEffects.Move,
+                itemsList,
+                new System.Windows.Point(250, 160)
+            ]);
+            previewDropEvent.RoutedEvent = System.Windows.DragDrop.PreviewDropEvent;
+            var previewDropHandler = typeof(FenceControl).GetMethod(
+                "FenceControl_PreviewDrop",
+                System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+            previewDropHandler!.Invoke(control, [itemsList, previewDropEvent]);
+            var previewDropCompleted = PumpDispatcherUntil(
+                () => File.Exists(previewDropTarget) && !File.Exists(previewDropSource) &&
+                      control.LoadedItemsForTesting.Any(item =>
+                          string.Equals(item.FullPath, previewDropTarget, StringComparison.OrdinalIgnoreCase)),
+                TimeSpan.FromSeconds(5));
+            Assert(previewDropCompleted &&
+                   control.LoadedItemsForTesting.Any(item =>
+                       string.Equals(item.FullPath, previewDropTarget, StringComparison.OrdinalIgnoreCase)) &&
+                   previewDropEvent.Handled,
+                $"The Fence preview-drop handler must accept nested ListView file data and move it into the target folder. " +
+                $"target={File.Exists(previewDropTarget)}, source={File.Exists(previewDropSource)}, handled={previewDropEvent.Handled}, effects={previewDropEvent.Effects}");
             var tabDragPreview = control.CreateTabDragPreviewForTesting();
             Assert(tabDragPreview.Content is FenceControl
                    {
@@ -1415,7 +1904,7 @@ static void TestFenceControlBindingAndLayout(string root)
                        Height: > 0,
                        IsHitTestVisible: false
                    } previewFence &&
-                   previewFence.LoadedItemsForTesting.Count == loadedItems.Count,
+                   previewFence.LoadedItemsForTesting.Count == control.LoadedItemsForTesting.Count,
                 "Detached-tab dragging must create a real non-interactive Fence preview with its items and icons loaded.");
             tabDragPreview.Close();
             control.NavigatePortalForTesting(childFolder);
@@ -1491,10 +1980,18 @@ static void TestFenceControlBindingAndLayout(string root)
             });
             secondFence.LoadFolderItems();
             control.SelectItemForTesting(0);
+            control.UpdateLayout();
+            Assert(control.ExpandedOverlayAllowsUnderlyingItemSelectionForTesting(),
+                "An expanded long-name tile must be visual-only so items underneath remain selectable.");
             secondFence.SelectItemForTesting(0);
             MainWindow.ClearOtherFenceSelections([control, secondFence], secondFence);
             Assert(control.SelectedItemCountForTesting == 0 && secondFence.SelectedItemCountForTesting == 1,
                 "Selecting an item in one Fence must clear item selections in every other Fence.");
+            control.SetDragHighlightedForTesting();
+            secondFence.SetDragHighlightedForTesting();
+            MainWindow.ClearAllFenceDragHighlights([control, secondFence]);
+            Assert(!control.IsDragHighlightedForTesting && !secondFence.IsDragHighlightedForTesting,
+                "Canceling a drag must clear target highlighting from every Fence, including overlapping Fences.");
             secondFence.StopForTesting();
 
             var looseIcon = new DesktopLooseIconControl(new FolderItem
@@ -1503,19 +2000,90 @@ static void TestFenceControlBindingAndLayout(string root)
                 FullPath = childFolder,
                 Kind = "Folder"
             });
+            Assert(looseIcon.IsCompactNameTwoLinesForTesting,
+                "An unselected loose desktop icon must reserve exactly two centered filename lines.");
             looseIcon.SetSelected(true);
+            Assert(looseIcon.IsNameExpandedForTesting && looseIcon.HasSelectionChromeForTesting,
+                "Selecting a loose desktop icon must expand its complete filename.");
+            Assert(looseIcon.IsExpandedNameContainedForTesting,
+                "Expanding a loose icon must grow one fixed-width selection tile around both the icon and complete filename.");
+            looseIcon.SetSelected(true, expandName: false);
+            Assert(looseIcon.IsCompactNameTwoLinesForTesting && looseIcon.HasSelectionChromeForTesting,
+                "A selected icon in a multi-selection must keep the compact two-line label.");
+            looseIcon.SetSelected(true);
+            looseIcon.SetDraggingVisualForTesting(true);
             Assert(looseIcon.IsNameExpandedForTesting,
-                "A selected loose desktop icon should expand its complete wrapped label above neighboring icons.");
+                "Starting a drag from an expanded icon must preserve its expanded geometry.");
+            looseIcon.SetDraggingVisualForTesting(false);
+            Assert(looseIcon.IsNameExpandedForTesting,
+                "Canceling an expanded drag must restore exactly the pre-drag filename geometry.");
+            looseIcon.SetSelected(false);
+            looseIcon.SetDraggingVisualForTesting(true);
+            Assert(looseIcon.IsCompactNameTwoLinesForTesting,
+                "Starting an unexpanded drag must retain its compact two-line source label.");
+            looseIcon.SetDraggingVisualForTesting(false);
+            Assert(looseIcon.IsCompactNameTwoLinesForTesting,
+                "Canceling an unexpanded drag must retain compact geometry.");
+            looseIcon.SetSelected(true);
+            Assert(DesktopLooseIconControl.WasActiveSelectionBeforePointerDown(true, true) &&
+                   !DesktopLooseIconControl.WasActiveSelectionBeforePointerDown(true, false),
+                "Returning from another window must require one click to reactivate selection before rename can start.");
+            Assert(DesktopLooseIconControl.CanStartDragGesture(true, System.Windows.Input.MouseButtonState.Pressed) &&
+                   !DesktopLooseIconControl.CanStartDragGesture(false, System.Windows.Input.MouseButtonState.Pressed) &&
+                   !DesktopLooseIconControl.CanStartDragGesture(true, System.Windows.Input.MouseButtonState.Released),
+                "A loose icon may start dragging only after its own mouse-down; Escape must not arm the icon under the cursor.");
             looseIcon.BeginInlineRenameForTesting();
             Assert(looseIcon.IsInlineRenamingForTesting,
                 "A selected loose desktop icon should expose an inline text editor for renaming.");
+            looseIcon.Measure(new System.Windows.Size(86, 200));
+            looseIcon.Arrange(new System.Windows.Rect(0, 0, 86, looseIcon.DesiredSize.Height));
+            Assert(looseIcon.IsRenameEditorCenteredForTesting,
+                "The desktop inline rename editor and its text must be centered under the icon.");
             looseIcon.SetInlineRenameTextForTesting("a very long bound folder name that must wrap");
-            Assert(looseIcon.IsRenameEditorWrappedForTesting,
-                "Long loose desktop icon names should remain fully visible in a wrapped rename editor.");
+            Assert(looseIcon.IsRenameEditorCompactForTesting,
+                "Desktop renaming must use only the wrapped height required to keep the complete name visible.");
             looseIcon.SetInlineRenameTextForTesting("bound-folder");
             looseIcon.CommitInlineRenameIfPointerOutside(new System.Windows.Point(-1000, -1000));
             Assert(!looseIcon.IsInlineRenamingForTesting,
                 "Clicking outside an inline rename editor should commit it and restore the desktop icon label.");
+
+            var noOpHistoryPath = Path.Combine(folder, "no-op-rename-history", "actions.json");
+            var noOpHistory = new ActionHistoryService(noOpHistoryPath);
+            var noOpRenameIcon = new DesktopLooseIconControl(new FolderItem
+            {
+                Name = "bound-folder",
+                FullPath = childFolder,
+                Kind = "Folder"
+            }) { ActionHistory = noOpHistory };
+            noOpRenameIcon.BeginInlineRenameForTesting();
+            noOpRenameIcon.CommitInlineRenameIfPointerOutside(new System.Windows.Point(-1000, -1000));
+            Assert(!noOpRenameIcon.IsInlineRenamingForTesting &&
+                   noOpHistory.GetTransactions().Count == 0 &&
+                   ActionHistoryService.PathsEqual(childFolder, childFolder),
+                "Leaving a desktop rename unchanged must close immediately without touching the file system or action history.");
+
+            var looseRenameSource = Path.Combine(folder, "loose-rename-source");
+            var looseRenameTarget = Path.Combine(folder, "loose-rename-target");
+            Directory.CreateDirectory(looseRenameSource);
+            var renamedLooseIcon = new DesktopLooseIconControl(new FolderItem
+            {
+                Name = "loose-rename-source",
+                FullPath = looseRenameSource,
+                Kind = "Folder"
+            });
+            (string oldPath, string newPath)? renameEvent = null;
+            renamedLooseIcon.ItemRenamed += (_, oldPath, newPath) => renameEvent = (oldPath, newPath);
+            renamedLooseIcon.BeginInlineRenameForTesting();
+            renamedLooseIcon.SetInlineRenameTextForTesting("loose-rename-target");
+            renamedLooseIcon.CommitInlineRenameIfPointerOutside(new System.Windows.Point(-1000, -1000));
+            Assert(Directory.Exists(looseRenameTarget) &&
+                   !Directory.Exists(looseRenameSource) &&
+                   string.Equals(renamedLooseIcon.Item.FullPath, looseRenameTarget, StringComparison.OrdinalIgnoreCase) &&
+                   renamedLooseIcon.Item.Name == "loose-rename-target" &&
+                   renameEvent is { } renamed &&
+                   string.Equals(renamed.oldPath, looseRenameSource, StringComparison.OrdinalIgnoreCase) &&
+                   string.Equals(renamed.newPath, looseRenameTarget, StringComparison.OrdinalIgnoreCase),
+                "Renaming a loose desktop icon must retain its rendered item and expose the new path without a full desktop redraw.");
 
             var shortRenameEditor = new System.Windows.Controls.TextBox { FontSize = 12 };
             InlineRenameAppearance.Apply(shortRenameEditor, "tools");
@@ -1523,21 +2091,54 @@ static void TestFenceControlBindingAndLayout(string root)
             InlineRenameAppearance.Apply(longRenameEditor, "a very long desktop item name");
             Assert(shortRenameEditor.Width < longRenameEditor.Width &&
                    shortRenameEditor.Width >= InlineRenameAppearance.MinimumWidth &&
-                   longRenameEditor.Width == InlineRenameAppearance.MaximumWidth,
-                "Inline rename width should fit short names and cap long names at the desktop icon cell width.");
+                   longRenameEditor.Width == InlineRenameAppearance.WrappedEditorWidth,
+                "Inline rename width should compensate one-line labels and preserve the wrapped label column for long names.");
             Assert(shortRenameEditor.SelectionOpacity < 1 &&
-                   shortRenameEditor.TextAlignment == System.Windows.TextAlignment.Left &&
+                   shortRenameEditor.TextAlignment == System.Windows.TextAlignment.Center &&
                    shortRenameEditor.BorderThickness.Left == 1,
                 "Inline rename must keep selected text readable and use a compact desktop-style border.");
-            Assert(InlineRenameAppearance.MeasureWrappedHeight(longRenameEditor, "VMware Workstation Professional", InlineRenameAppearance.MaximumWidth) >
+            Assert(InlineRenameAppearance.MeasureWrappedHeight(longRenameEditor, "VMware Workstation Professional", InlineRenameAppearance.WrappedEditorWidth) >
                    InlineRenameAppearance.EditorHeight,
                 "A long desktop item name should produce a rename editor taller than one line.");
-            Assert(InlineRenameAppearance.MeasureWrappedHeight(longRenameEditor, "Workstation Pro", InlineRenameAppearance.MaximumWidth) >
+            Assert(InlineRenameAppearance.MeasureWrappedHeight(longRenameEditor, "Workstation Pro", InlineRenameAppearance.WrappedEditorWidth) >
                    InlineRenameAppearance.EditorHeight,
                 "A desktop item name that only slightly exceeds the editor width must still wrap to a second line.");
-            Assert(InlineRenameAppearance.MeasureWrappedHeight(longRenameEditor, "VMware Workstation Pro", InlineRenameAppearance.MaximumWidth) >
-                   InlineRenameAppearance.MeasureWrappedHeight(longRenameEditor, "Workstation Pro", InlineRenameAppearance.MaximumWidth),
+            Assert(InlineRenameAppearance.MeasureWrappedHeight(longRenameEditor, "VMware Workstation Pro", InlineRenameAppearance.WrappedEditorWidth) >
+                   InlineRenameAppearance.MeasureWrappedHeight(longRenameEditor, "Workstation Pro", InlineRenameAppearance.WrappedEditorWidth),
                 "Word-aware wrapping must allocate a third line for VMware Workstation Pro instead of scrolling its first word away.");
+            Assert(InlineRenameAppearance.GetInitialSelectionLength(@"C:\Desktop\archive.zip", "archive") == "archive".Length &&
+                   InlineRenameAppearance.GetInitialSelectionLength(@"C:\Desktop\MiniFences-0.23.12.zip", "MiniFences-0.23.12") == "MiniFences-0.23.12".Length,
+                "A rename editor whose label hides the extension must select the complete visible base name without treating version dots as an extension.");
+            var independentRenameWindow = new DesktopRenameWindow(
+                "desktop-item",
+                new System.Windows.Int32Rect(100, 100, 103, 25),
+                InlineRenameAppearance.MaximumWidth,
+                InlineRenameAppearance.EditorHeight);
+            Assert(independentRenameWindow.WindowStyle == System.Windows.WindowStyle.None &&
+                   !independentRenameWindow.ShowInTaskbar &&
+                   independentRenameWindow.Topmost &&
+                   independentRenameWindow.ShowActivated &&
+                   independentRenameWindow.IsCenteredForTesting &&
+                   !independentRenameWindow.CommitsOnWindowDeactivationForTesting &&
+                   independentRenameWindow.Editor.TextWrapping == System.Windows.TextWrapping.Wrap &&
+                   !independentRenameWindow.Editor.AcceptsReturn &&
+                   independentRenameWindow.ContainsPhysicalScreenPoint(new System.Windows.Point(150, 120)) &&
+                   !independentRenameWindow.ContainsPhysicalScreenPoint(new System.Windows.Point(50, 50)),
+                "Desktop icon renaming must use a centered, independently activated editor window instead of activating the Explorer-hosted desktop surface.");
+            var outsideClickDismissedRename = false;
+            independentRenameWindow.CancelRequested = () => outsideClickDismissedRename = true;
+            independentRenameWindow.TryCommitRequested = _ => throw new InvalidOperationException(
+                "An unchanged outside-click rename must not execute a file-system rename.");
+            independentRenameWindow.Show();
+            Assert(!independentRenameWindow.RequestCommitIfPointerOutside(new System.Windows.Point(150, 120)) &&
+                   independentRenameWindow.RequestCommitIfPointerOutside(new System.Windows.Point(50, 50)) &&
+                   PumpDispatcherUntil(
+                       () => outsideClickDismissedRename && !independentRenameWindow.IsVisible,
+                       TimeSpan.FromSeconds(2)),
+                "A click on non-activating desktop space must dismiss an unchanged rename without waiting for window deactivation.");
+            Assert(!MainWindow.ShouldRepairDesktopLayerOnDeactivation(true) &&
+                   MainWindow.ShouldRepairDesktopLayerOnDeactivation(false),
+                "Opening the independent rename editor must not trigger a competing desktop z-order repair.");
             const long noActivateStyle = 0x08000000L;
             Assert(MainWindow.UpdateInlineRenameActivationStyle(noActivateStyle, enabled: true) == 0 &&
                    MainWindow.UpdateInlineRenameActivationStyle(0, enabled: false) == noActivateStyle,
@@ -1553,6 +2154,11 @@ static void TestFenceControlBindingAndLayout(string root)
             Assert(FenceControl.IsFolderIconHotZone(new System.Windows.Point(21, 21), new System.Windows.Size(42, 42)) &&
                    !FenceControl.IsFolderIconHotZone(new System.Windows.Point(21, 70), new System.Windows.Size(42, 42)),
                 "Only the folder image itself should accept file moves; its label and surrounding cell must remain available for manual ordering.");
+            Assert(FenceControl.IsStableFolderDropZone(new System.Windows.Point(43, 25), new System.Windows.Size(86, 92)) &&
+                   FenceControl.IsStableFolderDropZone(new System.Windows.Point(43, 78), new System.Windows.Size(86, 92)) &&
+                   !FenceControl.IsStableFolderDropZone(new System.Windows.Point(90, 25), new System.Windows.Size(86, 92)),
+                "A folder's full item cell must remain a stable target while the margin between item cells stays available for insertion.");
+
             var gridBounds = new[]
             {
                 new System.Windows.Rect(0, 0, 86, 92),

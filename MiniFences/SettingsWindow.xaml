@@ -179,10 +179,10 @@
                     </Border>
                     <TextBlock x:Name="QuickActionsTitle" Style="{StaticResource GroupTitle}" Text="Quick actions" Margin="0,26,0,12" />
                     <WrapPanel>
-                        <Button x:Name="WelcomeNewFenceButton" Content="New Fence" Click="NewFenceButton_Click" />
-                        <Button x:Name="WelcomeRefreshButton" Content="Refresh all" Click="RefreshButton_Click" />
-                        <Button x:Name="WelcomeToggleButton" Content="Disable MiniFences" Click="WelcomeIntegrationButton_Click" />
-                        <Button x:Name="WelcomeTopmostButton" Content="Pin Fences on top" Click="TopmostButton_Click" />
+                        <Button x:Name="WelcomeNewFenceButton" Content="New Fence" ClickMode="Press" Click="NewFenceButton_Click" />
+                        <Button x:Name="WelcomeRefreshButton" Content="Refresh all" ClickMode="Press" Click="RefreshButton_Click" />
+                        <Button x:Name="WelcomeToggleButton" Content="Disable MiniFences" ClickMode="Press" Click="WelcomeIntegrationButton_Click" />
+                        <Button x:Name="WelcomeTopmostButton" Content="Pin Fences on top" ClickMode="Press" Click="TopmostButton_Click" />
                     </WrapPanel>
                 </StackPanel>
             </Grid>

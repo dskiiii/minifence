@@ -334,6 +334,7 @@ public sealed class AutoOrganizerService
 
     public static bool RuleMatches(AutoOrganizeRule rule, string path)
     {
+        if (!HasEffectiveCriteria(rule)) return false;
         var isFolder = Directory.Exists(path);
         if (rule.FoldersOnly && !isFolder) return false;
         if (!string.IsNullOrWhiteSpace(rule.NamePattern))
@@ -379,6 +380,15 @@ public sealed class AutoOrganizerService
 
         return true;
     }
+
+    internal static bool HasEffectiveCriteria(AutoOrganizeRule rule) =>
+        rule.FoldersOnly ||
+        !string.IsNullOrWhiteSpace(rule.NamePattern) ||
+        !string.IsNullOrWhiteSpace(rule.ExactNames) ||
+        !string.IsNullOrWhiteSpace(rule.Extensions) ||
+        !string.IsNullOrWhiteSpace(rule.ShortcutTargetPattern) ||
+        rule.MinimumSizeMb.HasValue ||
+        rule.MaximumSizeMb.HasValue;
 
     private static bool WildcardMatch(string value, string pattern)
     {
