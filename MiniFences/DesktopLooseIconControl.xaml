@@ -1,6 +1,7 @@
 <UserControl x:Class="MiniFences.DesktopLooseIconControl"
              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:local="clr-namespace:MiniFences"
              Width="86" MinHeight="92"
              AllowDrop="True"
              Background="Transparent"
@@ -8,30 +9,39 @@
              PreviewMouseLeftButtonDown="Control_PreviewMouseLeftButtonDown"
              PreviewMouseLeftButtonUp="Control_PreviewMouseLeftButtonUp"
              PreviewMouseMove="Control_MouseMove"
+             PreviewDragOver="Control_DragOver"
              PreviewMouseRightButtonDown="Control_PreviewMouseRightButtonDown"
              DragOver="Control_DragOver"
+             DragLeave="Control_DragLeave"
              Drop="Control_Drop">
+    <UserControl.Resources>
+        <local:DesktopIconLabelConverter x:Key="DesktopIconLabelConverter" />
+    </UserControl.Resources>
     <UserControl.ContextMenu>
         <ContextMenu>
             <MenuItem Header="Open" Click="OpenMenuItem_Click" />
-            <MenuItem Header="Show in Explorer" Click="ShowMenuItem_Click" />
-            <MenuItem Header="Rename" Click="RenameMenuItem_Click" />
+            <MenuItem x:Name="ShowInExplorerMenuItem" Header="Show in Explorer" Click="ShowMenuItem_Click" />
+            <MenuItem x:Name="RenameItemMenuItem" Header="Rename" Click="RenameMenuItem_Click" />
             <Separator />
-            <MenuItem Header="Delete" Click="DeleteMenuItem_Click" />
+            <MenuItem x:Name="DeleteItemMenuItem" Header="Delete" Click="DeleteMenuItem_Click" />
         </ContextMenu>
     </UserControl.ContextMenu>
-    <Border x:Name="Chrome" Padding="4" CornerRadius="4" Background="Transparent" BorderThickness="1">
+    <Border x:Name="Chrome" Width="86" HorizontalAlignment="Center" Padding="4" CornerRadius="4" Background="Transparent" BorderThickness="1">
         <Grid>
-            <Grid.RowDefinitions><RowDefinition Height="54" /><RowDefinition Height="Auto" /></Grid.RowDefinitions>
+            <Grid.RowDefinitions><RowDefinition Height="54" /><RowDefinition x:Name="NameRow" Height="30" /></Grid.RowDefinitions>
             <Image x:Name="IconImage" Width="44" Height="44" Source="{Binding Icon}" Stretch="Uniform" HorizontalAlignment="Center" />
             <Grid Grid.Row="1">
                 <TextBlock x:Name="NameText"
-                           Text="{Binding Name}"
+                           FontFamily="Microsoft YaHei UI"
                            Foreground="White"
                            FontSize="12"
                            TextAlignment="Center"
                            TextWrapping="NoWrap"
-                           TextTrimming="CharacterEllipsis" />
+                           TextTrimming="None"
+                           LineHeight="15"
+                           Height="30"
+                           MaxHeight="30"
+                           VerticalAlignment="Top" />
                 <TextBox x:Name="RenameTextBox"
                          Visibility="Collapsed"
                          FontSize="12"

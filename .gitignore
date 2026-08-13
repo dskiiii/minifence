@@ -8,6 +8,8 @@ node_modules/
 **/obj/
 artifacts/
 backups/
+/release/
+/dotnet-install.ps1
 
 # IDE and user-specific files
 .vs/

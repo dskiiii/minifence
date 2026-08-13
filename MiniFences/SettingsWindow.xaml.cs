@@ -12,6 +12,7 @@ public partial class SettingsWindow : Window
 {
     private const string AllAppearanceTargetId = "__all_fences__";
     private readonly MainWindow _mainWindow;
+    private readonly FolderItemService _folderItemService = new();
     private bool _updatingControls;
     private FenceConfig? _copiedAppearance;
     private System.Windows.Point _pagePreviewDragStart;
@@ -21,6 +22,7 @@ public partial class SettingsWindow : Window
     private bool _displayPreviewTemporarilyHidden;
     private bool _hasLoaded;
     private DateTime _lastReloadUtc = DateTime.MinValue;
+    private CancellationTokenSource? _contentIconLoadCancellation;
 
     public SettingsWindow(MainWindow mainWindow)
     {
@@ -34,8 +36,40 @@ public partial class SettingsWindow : Window
         };
         Activated += (_, _) =>
         {
+            _mainWindow.CancelActiveRenamesForSettings();
             if (_hasLoaded && DateTime.UtcNow - _lastReloadUtc > TimeSpan.FromSeconds(1)) ReloadState();
         };
+    }
+
+    protected override void OnClosed(EventArgs e)
+    {
+        _contentIconLoadCancellation?.Cancel();
+        _contentIconLoadCancellation?.Dispose();
+        _contentIconLoadCancellation = null;
+        base.OnClosed(e);
+    }
+
+    private void SettingsWindow_PreviewKeyDown(object sender, System.Windows.Input.KeyEventArgs e)
+    {
+        if (!Keyboard.Modifiers.HasFlag(ModifierKeys.Control)) return;
+        var index = e.Key switch
+        {
+            Key.D1 or Key.NumPad1 => 0,
+            Key.D2 or Key.NumPad2 => 1,
+            Key.D3 or Key.NumPad3 => 2,
+            Key.D4 or Key.NumPad4 => 3,
+            Key.D5 or Key.NumPad5 => 4,
+            Key.D6 or Key.NumPad6 => 5,
+            Key.D7 or Key.NumPad7 => 6,
+            Key.D8 or Key.NumPad8 => 7,
+            Key.D9 or Key.NumPad9 => 8,
+            Key.D0 or Key.NumPad0 => 9,
+            _ => -1
+        };
+        if (index < 0 || index >= NavigationList.Items.Count) return;
+        NavigationList.SelectedIndex = index;
+        if (NavigationList.ItemContainerGenerator.ContainerFromIndex(index) is ListBoxItem item) item.Focus();
+        e.Handled = true;
     }
 
     internal void ReloadState()
@@ -81,9 +115,8 @@ public partial class SettingsWindow : Window
                 ? _mainWindow.Localization.T("Hidden")
                 : _mainWindow.Localization.T("Visible");
             CurrentPageValue.Text = $"{_mainWindow.Localization.T("Page")} {_mainWindow.SettingsCurrentPage + 1} / {_mainWindow.SettingsPageCount}";
-            WelcomeToggleButton.Content = _mainWindow.IsDesktopIconIntegrationEnabled
-                ? _mainWindow.Localization.T("DisableMiniFences")
-                : _mainWindow.Localization.T("EnableMiniFences");
+            WelcomeToggleButton.Content = _mainWindow.Localization.T(
+                GetWelcomeVisibilityActionKey(_mainWindow.IsMiniFencesEnabled));
             WelcomeTopmostButton.Content = _mainWindow.AreFencesTopmost
                 ? _mainWindow.Localization.T("RestoreFencesToDesktop")
                 : _mainWindow.Localization.T("PinFencesOnTop");
@@ -96,6 +129,10 @@ public partial class SettingsWindow : Window
             EnableRollupCheckBox.IsChecked = _mainWindow.IsRollupEnabled;
             DoubleClickRollupCheckBox.IsChecked = _mainWindow.IsDoubleClickTitleRollupEnabled;
             AutoEdgeRollupCheckBox.IsChecked = _mainWindow.IsAutoRollupAtScreenEdgeEnabled;
+            AllowBottomEdgeRollupCheckBox.IsChecked = _mainWindow.IsBottomEdgeRollupAllowed;
+            BottomDockTitleCheckBox.IsChecked = _mainWindow.IsBottomDockTitleAtBottomEnabled;
+            TopDockTitleAtBottomOnExpandCheckBox.IsChecked = _mainWindow.IsTopDockTitleAtBottomOnExpandEnabled;
+            UpdateBottomRollupOptionAvailability();
             ClickTitleExpandCheckBox.IsChecked = _mainWindow.IsClickTitleToExpandEnabled;
             HoverTitleExpandCheckBox.IsChecked = _mainWindow.IsHoverTitleToExpandEnabled;
             TabViewComboBox.SelectedItem = TabViewComboBox.Items.OfType<ComboBoxItem>()
@@ -105,12 +142,21 @@ public partial class SettingsWindow : Window
             PreviousPageHotkeyTextBox.Text = _mainWindow.PreviousPageHotkey;
             NextPageHotkeyTextBox.Text = _mainWindow.NextPageHotkey;
             TopmostHotkeyTextBox.Text = _mainWindow.ToggleTopmostHotkey;
+            var directPageBoxes = GetDirectPageHotkeyTextBoxes();
+            for (var index = 0; index < directPageBoxes.Length; index += 1)
+                directPageBoxes[index].Text = index < _mainWindow.DirectPageHotkeys.Count
+                    ? _mainWindow.DirectPageHotkeys[index]
+                    : $"F{index + 1}";
+            EnableGridSnappingCheckBox.IsChecked = _mainWindow.IsSnapToGridEnabled;
+            GridSizeTextBox.Text = _mainWindow.GridSize.ToString();
+            SnapWhileDraggingCheckBox.IsChecked = _mainWindow.IsSnapWhileDraggingEnabled;
             StartWithWindowsCheckBox.IsChecked = _mainWindow.IsStartWithWindowsEnabled;
             PreviousPageButton.IsEnabled = _mainWindow.SettingsCurrentPage > 0;
             NextPageButton.IsEnabled = _mainWindow.SettingsCurrentPage < _mainWindow.SettingsPageCount - 1;
             DeletePageButton.IsEnabled = _mainWindow.CanDeleteSettingsCurrentPage;
             if (PagesPanel.Visibility == Visibility.Visible) RebuildPagePreviews(fences);
             if (LayoutsPanel.Visibility == Visibility.Visible) ReloadLayouts();
+            if (HistoryPanel.Visibility == Visibility.Visible) ReloadHistory();
 
             foreach (var item in LanguageComboBox.Items.OfType<ComboBoxItem>())
             {
@@ -162,6 +208,14 @@ public partial class SettingsWindow : Window
         RollupNav.Content = loc.T("Rollup");
         TabsNav.Content = loc.T("Tabs");
         PersonalizeNav.Content = loc.T("FenceAppearance");
+        var chinese = string.Equals(loc.Language, LocalizationService.Chinese, StringComparison.OrdinalIgnoreCase);
+        HistoryNav.Content = chinese ? "操作历史" : "Action history";
+        HistoryTitle.Text = chinese ? "操作历史" : "Action history";
+        HistoryDescription.Text = chinese ? "查看最近 30 天的操作并安全撤销上一步。" : "Review the last 30 days and safely undo the latest action.";
+        UndoSelectedHistoryButton.Content = chinese ? "撤销选中操作" : "Undo selected";
+        OpenRelatedHistoryButton.Content = chinese ? "打开相关位置" : "Open related location";
+        OpenRecycleBinButton.Content = chinese ? "打开回收站" : "Open Recycle Bin";
+        ClearHistoryButton.Content = chinese ? "清空历史" : "Clear history";
         GeneralNav.Content = loc.T("General");
         AboutNav.Content = loc.T("About");
 
@@ -233,6 +287,8 @@ public partial class SettingsWindow : Window
         RulePriorityLabel.Text = loc.T("RulePriority");
         RuleNamePatternLabel.Text = loc.T("RuleNamePattern");
         RuleExtensionsLabel.Text = loc.T("RuleExtensions");
+        RuleExactNamesLabel.Text = string.Equals(loc.Language, LocalizationService.Chinese, StringComparison.OrdinalIgnoreCase) ? "精确名称" : "Exact names";
+        RuleShortcutTargetLabel.Text = string.Equals(loc.Language, LocalizationService.Chinese, StringComparison.OrdinalIgnoreCase) ? "快捷方式目标" : "Shortcut target";
         RuleSizeLabel.Text = loc.T("RuleSizeRange");
         RuleFoldersOnlyCheckBox.Content = loc.T("FoldersOnly");
 
@@ -257,12 +313,16 @@ public partial class SettingsWindow : Window
         EnableRollupCheckBox.Content = loc.T("RollupEnabled");
         DoubleClickRollupCheckBox.Content = loc.T("DoubleClickRollup");
         AutoEdgeRollupCheckBox.Content = loc.T("AutoEdgeRollup");
+        AllowBottomEdgeRollupCheckBox.Content = loc.T("AllowBottomEdgeRollup");
+        BottomDockTitleCheckBox.Content = loc.T("BottomDockTitle");
+        TopDockTitleAtBottomOnExpandCheckBox.Content = loc.T("TopDockTitleAtBottomOnExpand");
         ClickTitleExpandCheckBox.Content = loc.T("ClickTitleExpand");
         HoverTitleExpandCheckBox.Content = loc.T("HoverTitleExpand");
         FenceAppearanceTitle.Text = loc.T("FenceAppearance");
         FenceAppearanceDescription.Text = loc.T("FenceAppearanceDescription");
         BackgroundColorLabel.Text = loc.T("BackgroundColor");
         HeaderColorLabel.Text = loc.T("HeaderColor");
+        HeaderGradientCheckBox.Content = loc.T("HeaderGradient");
         TitleAlignmentLabel.Text = loc.T("TitleAlignment");
         FenceStyleLabel.Text = loc.T("FrameStyle");
         ShowPathCheckBox.Content = loc.T("ShowPath");
@@ -273,6 +333,7 @@ public partial class SettingsWindow : Window
         OpacityLabel.Text = loc.T("Opacity");
         BackgroundColorButton.Content = loc.T("ChooseColor");
         HeaderColorButton.Content = loc.T("ChooseColor");
+        HeaderGradientColorButton.Content = loc.T("ChooseGradientColor");
         ResetAppearanceButton.Content = loc.T("ResetAppearance");
         CopyAppearanceButton.Content = loc.T("CopyAppearance");
         PasteAppearanceButton.Content = loc.T("PasteAppearance");
@@ -289,6 +350,14 @@ public partial class SettingsWindow : Window
         PreviousPageHotkeyLabel.Text = loc.T("PreviousPage");
         NextPageHotkeyLabel.Text = loc.T("NextPage");
         TopmostHotkeyLabel.Text = loc.T("PinRestoreFences");
+        DirectPageHotkeysTitle.Text = loc.T("DirectPageHotkeys");
+        var directPageLabels = GetDirectPageHotkeyLabels();
+        for (var index = 0; index < directPageLabels.Length; index += 1)
+            directPageLabels[index].Text = $"{loc.T("Page")} {index + 1}";
+        GridSnappingTitle.Text = loc.T("GridSnapping");
+        EnableGridSnappingLabel.Text = loc.T("EnableGridSnapping");
+        GridSizeLabel.Text = loc.T("GridSizePixels");
+        SnapWhileDraggingLabel.Text = loc.T("SnapWhileDragging");
         ApplyHotkeysButton.Content = loc.T("ApplyShortcuts");
         StartWithWindowsCheckBox.Content = loc.T("StartWithWindows");
         foreach (var item in LanguageComboBox.Items.OfType<ComboBoxItem>())
@@ -326,6 +395,7 @@ public partial class SettingsWindow : Window
             case "Pages": RebuildPagePreviews(_mainWindow.GetFenceSettingsSnapshot()); break;
             case "Layouts": ReloadLayouts(); break;
             case "Appearance": UpdateAppearanceControls(); break;
+            case "History": ReloadHistory(); break;
         }
     }
 
@@ -340,6 +410,7 @@ public partial class SettingsWindow : Window
         "Rollup" => "RollupPanel",
         "Tabs" => "TabsPanel",
         "Appearance" => "AppearancePanel",
+        "History" => "HistoryPanel",
         "General" => "GeneralPanel",
         "About" => "AboutPanel",
         _ => null
@@ -356,9 +427,90 @@ public partial class SettingsWindow : Window
         RollupPanel,
         TabsPanel,
         AppearancePanel,
+        HistoryPanel,
         GeneralPanel,
         AboutPanel
     ];
+
+    private HistoryDisplayRow? SelectedHistory => HistoryList.SelectedItem as HistoryDisplayRow;
+
+    private void ReloadHistory()
+    {
+        var selectedId = SelectedHistory?.Id;
+        var chinese = string.Equals(_mainWindow.Localization.Language, LocalizationService.Chinese, StringComparison.OrdinalIgnoreCase);
+        var history = _mainWindow.GetActionHistory().Select(transaction => new HistoryDisplayRow(
+            transaction,
+            chinese ? transaction.DisplayName : transaction.ActionType switch
+            {
+                "DeleteFence" => "Delete Fence",
+                "Membership" => "Change desktop assignment",
+                "FileMove" => "Move or rename files",
+                "RecycleDelete" => "Move to Recycle Bin",
+                "LayoutRestore" => "Change layout",
+                _ => transaction.DisplayName
+            },
+            transaction.Status switch
+            {
+                "Completed" => chinese ? "已完成" : "Completed",
+                "PartiallyCompleted" => chinese ? "部分完成" : "Partially completed",
+                "Undone" => chinese ? "已撤销" : "Undone",
+                "PartiallyUndone" => chinese ? "部分撤销" : "Partially undone",
+                _ => chinese ? "失败" : "Failed"
+            })).ToArray();
+        HistoryList.ItemsSource = history;
+        HistoryList.SelectedItem = history.FirstOrDefault(item => item.Id == selectedId) ?? history.FirstOrDefault();
+        UpdateHistoryButtons();
+    }
+
+    private void HistoryList_SelectionChanged(object sender, SelectionChangedEventArgs e) => UpdateHistoryButtons();
+
+    private void UpdateHistoryButtons()
+    {
+        var selected = SelectedHistory;
+        UndoSelectedHistoryButton.IsEnabled = selected is not null && _mainWindow.CanUndoAction(selected.Id);
+        OpenRelatedHistoryButton.IsEnabled = selected?.Transaction.Entries.Any(entry =>
+            !string.IsNullOrWhiteSpace(entry.SourcePath) || !string.IsNullOrWhiteSpace(entry.DestinationPath)) == true;
+    }
+
+    private void UndoSelectedHistoryButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (SelectedHistory is null) return;
+        _mainWindow.UndoActionFromSettings(SelectedHistory.Id, this);
+        ReloadHistory();
+    }
+
+    private void OpenRelatedHistoryButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (SelectedHistory is not null) _mainWindow.OpenHistoryLocation(SelectedHistory.Transaction, this);
+    }
+
+    private sealed class HistoryDisplayRow
+    {
+        public HistoryDisplayRow(ActionTransaction transaction, string displayName, string statusDisplay)
+        {
+            Transaction = transaction;
+            DisplayName = displayName;
+            StatusDisplay = statusDisplay;
+        }
+        public ActionTransaction Transaction { get; }
+        public string Id => Transaction.Id;
+        public DateTime DisplayTime => Transaction.DisplayTime;
+        public int AffectedCount => Transaction.AffectedCount;
+        public string DisplayName { get; }
+        public string StatusDisplay { get; }
+    }
+
+    private void OpenRecycleBinButton_Click(object sender, RoutedEventArgs e) => _mainWindow.OpenRecycleBin(this);
+
+    private void ClearHistoryButton_Click(object sender, RoutedEventArgs e)
+    {
+        var chinese = string.Equals(_mainWindow.Localization.Language, LocalizationService.Chinese, StringComparison.OrdinalIgnoreCase);
+        if (System.Windows.MessageBox.Show(this,
+            chinese ? "只清除操作记录，不会删除文件或修改当前布局。确定继续吗？" : "This only clears records; files and the current layout are unchanged. Continue?",
+            "MiniFences", MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes) return;
+        _mainWindow.ClearActionHistory();
+        ReloadHistory();
+    }
 
     private LayoutEntry? SelectedNamedLayout => NamedLayoutsList.SelectedItem as LayoutEntry;
     private LayoutEntry? SelectedSnapshot => SnapshotsList.SelectedItem as LayoutEntry;
@@ -463,10 +615,44 @@ public partial class SettingsWindow : Window
         FencePageComboBox.ItemsSource = Enumerable.Range(1, _mainWindow.SettingsPageCount).ToArray();
         FencePageComboBox.SelectedItem = fence == null ? null : fence.PageIndex + 1;
         FencePageComboBox.IsEnabled = fence != null;
-        UnassignedItemsList.ItemsSource = enabled ? _mainWindow.SettingsGetUnassignedDesktopItems() : Array.Empty<FolderItem>();
-        FenceItemsList.ItemsSource = enabled ? _mainWindow.SettingsGetFenceItems(fence!.Id) : Array.Empty<FolderItem>();
+        var unassignedItems = enabled ? _mainWindow.SettingsGetUnassignedDesktopItems() : Array.Empty<FolderItem>();
+        var fenceItems = enabled ? _mainWindow.SettingsGetFenceItems(fence!.Id) : Array.Empty<FolderItem>();
+        UnassignedItemsList.ItemsSource = unassignedItems;
+        FenceItemsList.ItemsSource = fenceItems;
         AssignItemsButton.IsEnabled = enabled;
         UnassignItemsButton.IsEnabled = enabled;
+
+        _contentIconLoadCancellation?.Cancel();
+        _contentIconLoadCancellation?.Dispose();
+        _contentIconLoadCancellation = null;
+        if (!enabled) return;
+        _contentIconLoadCancellation = new CancellationTokenSource();
+        _ = LoadContentIconsAsync(
+            unassignedItems.Concat(fenceItems).DistinctBy(item => item.FullPath, StringComparer.OrdinalIgnoreCase).ToArray(),
+            _contentIconLoadCancellation.Token);
+    }
+
+    private async Task LoadContentIconsAsync(IReadOnlyList<FolderItem> items, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await _folderItemService.LoadIconsAsync(items, (item, icon) =>
+            {
+                if (cancellationToken.IsCancellationRequested) return;
+                Dispatcher.BeginInvoke(() =>
+                {
+                    if (!cancellationToken.IsCancellationRequested && icon is not null) item.Icon = icon;
+                }, DispatcherPriority.Background);
+            }, cancellationToken);
+        }
+        catch (OperationCanceledException)
+        {
+            // A different Fence was selected before this icon pass completed.
+        }
+        catch (Exception ex)
+        {
+            AppLogger.LogException("Settings item icon loading failed", ex);
+        }
     }
 
     private void AssignItemsButton_Click(object sender, RoutedEventArgs e)
@@ -508,6 +694,8 @@ public partial class SettingsWindow : Window
         var enabled = fence != null;
         BackgroundColorButton.IsEnabled = enabled;
         HeaderColorButton.IsEnabled = enabled;
+        HeaderGradientCheckBox.IsEnabled = enabled;
+        HeaderGradientColorButton.IsEnabled = enabled && fence?.HeaderGradientEnabled == true;
         OpacitySlider.IsEnabled = enabled;
         ResetAppearanceButton.IsEnabled = enabled;
         CopyAppearanceButton.IsEnabled = enabled;
@@ -519,6 +707,8 @@ public partial class SettingsWindow : Window
         {
             BackgroundColorSwatch.Background = System.Windows.Media.Brushes.Transparent;
             HeaderColorSwatch.Background = System.Windows.Media.Brushes.Transparent;
+            HeaderGradientColorSwatch.Background = System.Windows.Media.Brushes.Transparent;
+            HeaderGradientCheckBox.IsChecked = false;
             OpacityValueText.Text = "";
             PreviewFenceBorder.Visibility = Visibility.Hidden;
             return;
@@ -526,6 +716,9 @@ public partial class SettingsWindow : Window
 
         BackgroundColorSwatch.Background = BrushFromColor(fence.BackgroundColor, "#DD20242A");
         HeaderColorSwatch.Background = BrushFromColor(fence.HeaderColor, "#CC3F7FA8");
+        HeaderGradientColorSwatch.Background = BrushFromColor(fence.HeaderGradientColor, "#CC8E5BB7");
+        HeaderGradientCheckBox.IsChecked = fence.HeaderGradientEnabled;
+        HeaderGradientColorButton.IsEnabled = fence.HeaderGradientEnabled;
         TitleAlignmentComboBox.SelectedItem = TitleAlignmentComboBox.Items.OfType<ComboBoxItem>()
             .FirstOrDefault(item => string.Equals(item.Tag?.ToString(), fence.TitleAlignment, StringComparison.OrdinalIgnoreCase));
         FenceStyleComboBox.SelectedItem = FenceStyleComboBox.Items.OfType<ComboBoxItem>()
@@ -540,7 +733,7 @@ public partial class SettingsWindow : Window
     {
         PreviewFenceBorder.Visibility = Visibility.Visible;
         PreviewFenceBorder.Opacity = 1.0;
-        PreviewHeader.Background = BrushFromColor(fence.HeaderColor, "#CC3F7FA8");
+        PreviewHeader.Background = FenceAppearanceBrush.CreateHeaderBrush(fence);
         PreviewHeader.BorderBrush = fence.UseCleanStyle
             ? new SolidColorBrush(System.Windows.Media.Color.FromArgb(0x55, 0xFF, 0xFF, 0xFF))
             : System.Windows.Media.Brushes.Transparent;
@@ -603,14 +796,33 @@ public partial class SettingsWindow : Window
 
     private void RefreshButton_Click(object sender, RoutedEventArgs e)
     {
-        _mainWindow.SettingsRefreshAll();
-        ReloadState();
+        try
+        {
+            AppLogger.Log("Settings Refresh All button clicked.");
+            _mainWindow.SettingsRefreshAll();
+            ReloadState();
+        }
+        catch (Exception ex)
+        {
+            AppLogger.LogException("Settings Refresh All failed", ex);
+            System.Windows.MessageBox.Show(this, ex.Message, "MiniFences", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
     }
 
     private void WelcomeIntegrationButton_Click(object sender, RoutedEventArgs e)
     {
-        _mainWindow.SettingsSetDesktopIconIntegration(!_mainWindow.IsDesktopIconIntegrationEnabled);
-        ReloadState();
+        try
+        {
+            var enabled = !_mainWindow.IsMiniFencesEnabled;
+            AppLogger.Log($"Settings Open/Close Fences button clicked. RequestedEnabled={enabled}.");
+            _mainWindow.SettingsSetMiniFencesEnabled(enabled);
+            ReloadState();
+        }
+        catch (Exception ex)
+        {
+            AppLogger.LogException("Settings Open/Close Fences failed", ex);
+            System.Windows.MessageBox.Show(this, ex.Message, "MiniFences", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
     }
 
     private void TopmostButton_Click(object sender, RoutedEventArgs e)
@@ -625,6 +837,7 @@ public partial class SettingsWindow : Window
                 PreviousPageHotkeyTextBox.Text,
                 NextPageHotkeyTextBox.Text,
                 TopmostHotkeyTextBox.Text,
+                GetDirectPageHotkeyTextBoxes().Select(textBox => textBox.Text).ToArray(),
                 out var error))
         {
             System.Windows.MessageBox.Show(this, error, "MiniFences", MessageBoxButton.OK, MessageBoxImage.Warning);
@@ -632,6 +845,32 @@ public partial class SettingsWindow : Window
         }
         ReloadState();
     }
+
+    private void GridSettings_Changed(object sender, RoutedEventArgs e) => ApplyGridSettingsImmediately();
+
+    private void GridSizeTextBox_TextChanged(object sender, TextChangedEventArgs e) => ApplyGridSettingsImmediately();
+
+    private void ApplyGridSettingsImmediately()
+    {
+        if (_updatingControls || !int.TryParse(GridSizeTextBox.Text, out var gridSize) || gridSize is < 1 or > 256) return;
+        _mainWindow.SettingsSetGridOptions(
+            EnableGridSnappingCheckBox.IsChecked == true, gridSize,
+            SnapWhileDraggingCheckBox.IsChecked == true, out _);
+    }
+
+    private System.Windows.Controls.TextBox[] GetDirectPageHotkeyTextBoxes() =>
+    [
+        DirectPage1HotkeyTextBox, DirectPage2HotkeyTextBox, DirectPage3HotkeyTextBox, DirectPage4HotkeyTextBox,
+        DirectPage5HotkeyTextBox, DirectPage6HotkeyTextBox, DirectPage7HotkeyTextBox, DirectPage8HotkeyTextBox,
+        DirectPage9HotkeyTextBox, DirectPage10HotkeyTextBox, DirectPage11HotkeyTextBox, DirectPage12HotkeyTextBox
+    ];
+
+    private TextBlock[] GetDirectPageHotkeyLabels() =>
+    [
+        DirectPage1HotkeyLabel, DirectPage2HotkeyLabel, DirectPage3HotkeyLabel, DirectPage4HotkeyLabel,
+        DirectPage5HotkeyLabel, DirectPage6HotkeyLabel, DirectPage7HotkeyLabel, DirectPage8HotkeyLabel,
+        DirectPage9HotkeyLabel, DirectPage10HotkeyLabel, DirectPage11HotkeyLabel, DirectPage12HotkeyLabel
+    ];
 
     private void RenameFenceButton_Click(object sender, RoutedEventArgs e)
     {
@@ -858,7 +1097,7 @@ public partial class SettingsWindow : Window
         var rule = SelectedRule;
         var enabled = rule != null;
         DeleteRuleButton.IsEnabled = enabled;
-        foreach (var control in new System.Windows.Controls.Control[] { RuleEnabledCheckBox, RuleNameTextBox, RuleTargetComboBox, RulePriorityTextBox, RuleNamePatternTextBox, RuleExtensionsTextBox, RuleMinimumSizeTextBox, RuleMaximumSizeTextBox, RuleFoldersOnlyCheckBox })
+        foreach (var control in new System.Windows.Controls.Control[] { RuleEnabledCheckBox, RuleNameTextBox, RuleTargetComboBox, RulePriorityTextBox, RuleNamePatternTextBox, RuleExtensionsTextBox, RuleMinimumSizeTextBox, RuleMaximumSizeTextBox, RuleFoldersOnlyCheckBox, RuleExactNamesTextBox, RuleShortcutTargetTextBox })
             control.IsEnabled = enabled;
         if (rule == null) return;
         _updatingControls = true;
@@ -870,6 +1109,8 @@ public partial class SettingsWindow : Window
             RulePriorityTextBox.Text = rule.Priority.ToString();
             RuleNamePatternTextBox.Text = rule.NamePattern;
             RuleExtensionsTextBox.Text = rule.Extensions;
+            RuleExactNamesTextBox.Text = rule.ExactNames;
+            RuleShortcutTargetTextBox.Text = rule.ShortcutTargetPattern;
             RuleMinimumSizeTextBox.Text = rule.MinimumSizeMb?.ToString() ?? "";
             RuleMaximumSizeTextBox.Text = rule.MaximumSizeMb?.ToString() ?? "";
             RuleFoldersOnlyCheckBox.IsChecked = rule.FoldersOnly;
@@ -886,6 +1127,8 @@ public partial class SettingsWindow : Window
         rule.Priority = int.TryParse(RulePriorityTextBox.Text, out var priority) ? priority : 100;
         rule.NamePattern = RuleNamePatternTextBox.Text.Trim();
         rule.Extensions = RuleExtensionsTextBox.Text.Trim();
+        rule.ExactNames = RuleExactNamesTextBox.Text.Trim();
+        rule.ShortcutTargetPattern = RuleShortcutTargetTextBox.Text.Trim();
         rule.MinimumSizeMb = double.TryParse(RuleMinimumSizeTextBox.Text, out var minimum) ? Math.Max(0, minimum) : null;
         rule.MaximumSizeMb = double.TryParse(RuleMaximumSizeTextBox.Text, out var maximum) ? Math.Max(0, maximum) : null;
         rule.FoldersOnly = RuleFoldersOnlyCheckBox.IsChecked == true;
@@ -895,13 +1138,16 @@ public partial class SettingsWindow : Window
 
     private void ShowFencesCheckBox_Click(object sender, RoutedEventArgs e)
     {
-        if (!_updatingControls && ShowFencesCheckBox.IsChecked == _mainWindow.AreFencesHidden)
+        if (!_updatingControls)
         {
-            _mainWindow.SettingsToggleFences();
+            _mainWindow.SettingsSetFencesVisible(ShowFencesCheckBox.IsChecked == true);
             ReloadState();
         }
         UpdateDisplayPreview();
     }
+
+    internal static string GetWelcomeVisibilityActionKey(bool allFencesVisible) =>
+        allFencesVisible ? "DisableMiniFences" : "EnableMiniFences";
 
     private void DesktopDoubleClickCheckBox_Click(object sender, RoutedEventArgs e)
     {
@@ -938,9 +1184,36 @@ public partial class SettingsWindow : Window
         if (_updatingControls) return;
         _mainWindow.SettingsSetRollupOptions(EnableRollupCheckBox.IsChecked == true,
             DoubleClickRollupCheckBox.IsChecked == true, AutoEdgeRollupCheckBox.IsChecked == true,
+            AllowBottomEdgeRollupCheckBox.IsChecked == true,
+            BottomDockTitleCheckBox.IsChecked == true, TopDockTitleAtBottomOnExpandCheckBox.IsChecked == true,
             ClickTitleExpandCheckBox.IsChecked == true, HoverTitleExpandCheckBox.IsChecked == true);
-        _rollupPreviewCollapsed = EnableRollupCheckBox.IsChecked == true && AutoEdgeRollupCheckBox.IsChecked == true;
+        UpdateBottomRollupOptionAvailability();
+        if (ReferenceEquals(sender, AutoEdgeRollupCheckBox) && AutoEdgeRollupCheckBox.IsChecked == true)
+            _rollupPreviewCollapsed = true;
         UpdateRollupPreview();
+    }
+
+    private void UpdateBottomRollupOptionAvailability()
+    {
+        var availability = GetBottomRollupOptionAvailability(
+            EnableRollupCheckBox.IsChecked == true,
+            AutoEdgeRollupCheckBox.IsChecked == true,
+            AllowBottomEdgeRollupCheckBox.IsChecked == true,
+            BottomDockTitleCheckBox.IsChecked == true);
+        AllowBottomEdgeRollupCheckBox.IsEnabled = availability.AllowBottomEdge;
+        BottomDockTitleCheckBox.IsEnabled = availability.BottomTitle;
+        TopDockTitleAtBottomOnExpandCheckBox.IsEnabled = availability.MoveTitle;
+    }
+
+    internal static (bool AllowBottomEdge, bool BottomTitle, bool MoveTitle)
+        GetBottomRollupOptionAvailability(
+            bool rollupEnabled,
+            bool automaticEdgeRollupEnabled,
+            bool allowBottomEdge,
+            bool bottomTitle)
+    {
+        var enabled = rollupEnabled && automaticEdgeRollupEnabled;
+        return (enabled, enabled, enabled);
     }
 
     private void UpdateSettingsPreviews()
@@ -1016,11 +1289,45 @@ public partial class SettingsWindow : Window
     {
         if (RollupPreviewContent == null) return;
         var collapsed = EnableRollupCheckBox.IsChecked == true && _rollupPreviewCollapsed;
+        var topMovingPreview = AutoEdgeRollupCheckBox.IsChecked == true &&
+                               TopDockTitleAtBottomOnExpandCheckBox.IsChecked == true;
+        var bottomEdgePreview = !topMovingPreview &&
+                                AutoEdgeRollupCheckBox.IsChecked == true &&
+                                AllowBottomEdgeRollupCheckBox.IsChecked == true;
+        var titleAtBottom = topMovingPreview
+            ? !collapsed
+            : bottomEdgePreview && BottomDockTitleCheckBox.IsChecked == true;
         RollupPreviewContent.Visibility = collapsed ? Visibility.Collapsed : Visibility.Visible;
-        RollupPreviewContentRow.Height = collapsed ? new GridLength(0) : new GridLength(82);
+        RollupPreviewFence.VerticalAlignment = bottomEdgePreview
+            ? VerticalAlignment.Bottom
+            : VerticalAlignment.Top;
+        if (titleAtBottom)
+        {
+            RollupPreviewFirstRow.Height = collapsed ? new GridLength(0) : new GridLength(82);
+            RollupPreviewContentRow.Height = new GridLength(34);
+            Grid.SetRow(RollupPreviewContent, 0);
+            Grid.SetRow(RollupPreviewHeaderBorder, 1);
+            RollupPreviewHeaderBorder.CornerRadius = collapsed
+                ? new CornerRadius(7)
+                : new CornerRadius(0, 0, 7, 7);
+        }
+        else
+        {
+            RollupPreviewFirstRow.Height = new GridLength(34);
+            RollupPreviewContentRow.Height = collapsed ? new GridLength(0) : new GridLength(82);
+            Grid.SetRow(RollupPreviewHeaderBorder, 0);
+            Grid.SetRow(RollupPreviewContent, 1);
+            RollupPreviewHeaderBorder.CornerRadius = collapsed
+                ? new CornerRadius(7)
+                : new CornerRadius(7, 7, 0, 0);
+        }
         RollupPreviewHeader.Text = collapsed
             ? _mainWindow.Localization.T("PreviewRolledUp")
-            : _mainWindow.Localization.T("PreviewExpanded");
+            : topMovingPreview
+                ? _mainWindow.Localization.T("PreviewExpandedTopDockBottomTitle")
+                : titleAtBottom
+                    ? _mainWindow.Localization.T("PreviewExpandedBottomTitle")
+                    : _mainWindow.Localization.T("PreviewExpanded");
         RollupPreviewFence.Opacity = EnableRollupCheckBox.IsChecked == true ? 1.0 : 0.55;
     }
 
@@ -1064,6 +1371,21 @@ public partial class SettingsWindow : Window
     private void HeaderColorButton_Click(object sender, RoutedEventArgs e)
     {
         if (SelectedStyleFence is { } fence && _mainWindow.SettingsChooseFenceColor(fence.Id, chooseHeader: true))
+        {
+            ReloadState();
+        }
+    }
+
+    private void HeaderGradientCheckBox_Click(object sender, RoutedEventArgs e)
+    {
+        if (_updatingControls || SelectedStyleFence is not { } fence) return;
+        _mainWindow.SettingsSetFenceHeaderGradient(fence.Id, HeaderGradientCheckBox.IsChecked == true);
+        ReloadState();
+    }
+
+    private void HeaderGradientColorButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (SelectedStyleFence is { } fence && _mainWindow.SettingsChooseFenceGradientColor(fence.Id))
         {
             ReloadState();
         }
@@ -1143,6 +1465,8 @@ public partial class SettingsWindow : Window
         Title = source.Title,
         BackgroundColor = source.BackgroundColor,
         HeaderColor = source.HeaderColor,
+        HeaderGradientEnabled = source.HeaderGradientEnabled,
+        HeaderGradientColor = source.HeaderGradientColor,
         Opacity = source.Opacity,
         TitleAlignment = source.TitleAlignment,
         ShowPath = source.ShowPath,

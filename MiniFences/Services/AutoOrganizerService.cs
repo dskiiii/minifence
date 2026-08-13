@@ -334,6 +334,7 @@ public sealed class AutoOrganizerService
 
     public static bool RuleMatches(AutoOrganizeRule rule, string path)
     {
+        if (!HasEffectiveCriteria(rule)) return false;
         var isFolder = Directory.Exists(path);
         if (rule.FoldersOnly && !isFolder) return false;
         if (!string.IsNullOrWhiteSpace(rule.NamePattern))
@@ -341,6 +342,15 @@ public sealed class AutoOrganizerService
             var name = Path.GetFileName(path);
             var patterns = rule.NamePattern.Split([';', ','], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
             if (!patterns.Any(pattern => WildcardMatch(name, pattern))) return false;
+        }
+
+        if (!string.IsNullOrWhiteSpace(rule.ExactNames))
+        {
+            var fileName = Path.GetFileName(path);
+            var nameWithoutExtension = Path.GetFileNameWithoutExtension(path);
+            var names = rule.ExactNames.Split([';', ','], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+            if (!names.Any(name => string.Equals(name, fileName, StringComparison.OrdinalIgnoreCase) ||
+                                   string.Equals(name, nameWithoutExtension, StringComparison.OrdinalIgnoreCase))) return false;
         }
 
         if (!string.IsNullOrWhiteSpace(rule.Extensions))
@@ -359,8 +369,26 @@ public sealed class AutoOrganizerService
             if (rule.MaximumSizeMb.HasValue && sizeMb > rule.MaximumSizeMb.Value) return false;
         }
 
+        if (!string.IsNullOrWhiteSpace(rule.ShortcutTargetPattern))
+        {
+            if (isFolder) return false;
+            var target = GetShortcutLaunchDescriptor(path);
+            if (string.IsNullOrWhiteSpace(target)) return false;
+            var patterns = rule.ShortcutTargetPattern.Split([';', ','], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+            if (!patterns.Any(pattern => WildcardMatch(target, pattern))) return false;
+        }
+
         return true;
     }
+
+    internal static bool HasEffectiveCriteria(AutoOrganizeRule rule) =>
+        rule.FoldersOnly ||
+        !string.IsNullOrWhiteSpace(rule.NamePattern) ||
+        !string.IsNullOrWhiteSpace(rule.ExactNames) ||
+        !string.IsNullOrWhiteSpace(rule.Extensions) ||
+        !string.IsNullOrWhiteSpace(rule.ShortcutTargetPattern) ||
+        rule.MinimumSizeMb.HasValue ||
+        rule.MaximumSizeMb.HasValue;
 
     private static bool WildcardMatch(string value, string pattern)
     {
@@ -746,7 +774,7 @@ public sealed class AutoOrganizerService
                descriptor.Contains("epicgames://launch", StringComparison.OrdinalIgnoreCase);
     }
 
-    private static string? GetShortcutLaunchDescriptor(string path)
+    internal static string? GetShortcutLaunchDescriptor(string path)
     {
         try
         {
