@@ -401,6 +401,7 @@ public partial class MainWindow : Window
         AppLogger.Log($"Rendered page {_config.CurrentPage + 1}/{GetPageCount()} with {Workspace.Children.OfType<FenceControl>().Count()} visible Fence(s) and {Workspace.Children.OfType<DesktopLooseIconControl>().Count()} loose icon(s).");
         ApplyFenceVisibility();
         UpdateMenuState();
+        _settingsWindow?.RefreshFromMainWindow();
         if (layoutChanged || membershipChanged)
         {
             SaveConfigWithWarning();
@@ -415,7 +416,7 @@ public partial class MainWindow : Window
         if (!_config.EnableDesktopIconIntegration) return;
         var assigned = _config.Fences.Where(fence => fence.IsDesktopGroup)
             .SelectMany(fence => fence.AssignedPaths)
-            .Select(TryGetFullPath)
+            .Select(path => FolderItemService.IsShellNamespacePath(path) ? path : TryGetFullPath(path))
             .Where(path => path != null)
             .Cast<string>()
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
@@ -429,7 +430,8 @@ public partial class MainWindow : Window
             .OrderBy(path => order.GetValueOrDefault(path, int.MaxValue))
             .ThenBy(path => Path.GetFileName(path), StringComparer.CurrentCultureIgnoreCase)
             .ToArray();
-        var systemItems = FolderItemService.LoadVisibleDesktopShellItems();
+        var systemItems = FolderItemService.LoadVisibleDesktopShellItems()
+            .Where(item => !assigned.Contains(item.FullPath));
         var items = systemItems.Concat(_folderItemService.LoadAssignedItems(paths)).ToArray();
         _config.DesktopIconOrder = items.Select(item => item.FullPath).ToList();
         var rows = GetDesktopIconGridRows();
@@ -688,6 +690,7 @@ public partial class MainWindow : Window
                 SynchronizeTabGroupPresentationState(control.Config, GetTabs(control.Config.TabGroupId));
             UpdateDesktopWindowRegion();
             ScheduleConfigSave();
+            _settingsWindow?.RefreshFromMainWindow();
         };
         control.NewFenceRequested += (_, _) => CreateNewDesktopGroup();
         control.DesktopItemsAssigned += (_, e) => Dispatcher.BeginInvoke(
@@ -701,6 +704,7 @@ public partial class MainWindow : Window
         control.ItemsChanged += (_, _) => Dispatcher.BeginInvoke(
             () => RenderFences(),
             DispatcherPriority.Background);
+        control.ContentRefreshed += (_, _) => _settingsWindow?.RefreshFromMainWindow();
         control.ItemSelectionRequested += (_, _) => HandleFenceItemSelection(control);
         control.ItemRenamed += (_, newPath) => SuppressAutoOrganizationAfterUserRename(newPath);
         control.HeaderDragCompleted += (_, _) =>
@@ -743,7 +747,9 @@ public partial class MainWindow : Window
         control.TabDragStarted += draggedIndex => Dispatcher.BeginInvoke(
             () => ShowRemainingTabDuringDrag(control, draggedIndex),
             DispatcherPriority.Input);
-        control.TabMergeRequested += sourceFenceId => MergeDraggedTab(sourceFenceId, control.Config);
+        control.TabDragCanceled += draggedIndex => RestoreCanceledTabDrag(control.Config.TabGroupId, draggedIndex);
+        control.TabMergeRequested += (sourceFenceId, insertionIndex) =>
+            MergeDraggedTab(sourceFenceId, control.Config, insertionIndex);
         control.UnstackRequested += (_, _) => UnstackFence(control);
         Workspace.Children.Add(control);
         Dispatcher.BeginInvoke(UpdateDesktopWindowRegion, DispatcherPriority.Loaded);
@@ -830,16 +836,16 @@ public partial class MainWindow : Window
     private bool MergeByHeaderOverlap(FenceControl sourceControl)
     {
         sourceControl.SyncConfigFromLayout();
-        var target = ReferenceEquals(sourceControl, _mergePreviewSource) &&
-                     _mergePreviewTarget != null && IsPointerOverHeader(_mergePreviewTarget.Config)
+        var target = ReferenceEquals(sourceControl, _mergePreviewSource) && _mergePreviewTarget != null
             ? _mergePreviewTarget
             : FindMergeTarget(sourceControl);
+        var insertionIndex = target?.GetTabInsertionIndexForHeaderPoint(sourceControl.GetHeaderDragMergePoint());
         ClearMergePreview();
         if (target == null) return false;
         if (_config.ConfirmTabCreation && System.Windows.MessageBox.Show(this,
                 $"将“{sourceControl.Config.Title}”与“{target.Config.Title}”合并为标签页？",
                 "MiniFences", MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes) return false;
-        StackFences(sourceControl.Config, target.Config);
+        StackFences(sourceControl.Config, target.Config, insertionIndex: insertionIndex);
         return true;
     }
 
@@ -854,10 +860,42 @@ public partial class MainWindow : Window
         var headerDragDistance = Math.Sqrt(
             Math.Pow(Canvas.GetLeft(control) - control.HeaderDragStartLeft, 2) +
             Math.Pow(Canvas.GetTop(control) - control.HeaderDragStartTop, 2));
-        var isCompactTabReorder = control.IsShiftDetachHeaderDrag &&
-                                  string.Equals(_config.TabViewMode, "Compact", StringComparison.OrdinalIgnoreCase) &&
-                                  Math.Abs(control.HeaderDragDeltaX) >= 48 &&
+        var isCompactTabDrag = control.IsShiftDetachHeaderDrag &&
+                               string.Equals(_config.TabViewMode, "Compact", StringComparison.OrdinalIgnoreCase);
+        var originalGroupBounds = new Rect(
+            control.HeaderDragStartLeft,
+            control.HeaderDragStartTop,
+            control.ActualWidth > 0 ? control.ActualWidth : control.Width,
+            control.ActualHeight > 0 ? control.ActualHeight : control.Height);
+        originalGroupBounds.Inflate(12, 12);
+        var releasedInsideOriginalGroup = originalGroupBounds.Contains(Mouse.GetPosition(Workspace));
+        var isCompactTabReorder = isCompactTabDrag && releasedInsideOriginalGroup &&
+                                  Math.Abs(control.HeaderDragDeltaX) >= 24 &&
                                   Math.Abs(Canvas.GetTop(control) - control.HeaderDragStartTop) < 48;
+        if (isCompactTabDrag && releasedInsideOriginalGroup)
+        {
+            ClearMergePreview();
+            var tabs = GetTabs(control.Config.TabGroupId);
+            foreach (var tab in tabs)
+            {
+                tab.Left = control.HeaderDragStartLeft;
+                tab.Top = control.HeaderDragStartTop;
+            }
+            Canvas.SetLeft(control, control.HeaderDragStartLeft);
+            Canvas.SetTop(control, control.HeaderDragStartTop);
+            control.SyncConfigFromLayout();
+            if (isCompactTabReorder)
+            {
+                var currentIndex = tabs.FindIndex(tab => tab.Id == control.Config.Id);
+                ReorderTabs(control.Config.TabGroupId, currentIndex,
+                    currentIndex + (control.HeaderDragDeltaX < 0 ? -1 : 1));
+            }
+            else
+            {
+                SaveConfigWithWarning();
+            }
+            return;
+        }
         if (control.IsShiftDetachHeaderDrag && headerDragDistance < 24)
         {
             Canvas.SetLeft(control, control.HeaderDragStartLeft);
@@ -892,20 +930,6 @@ public partial class MainWindow : Window
         // monitor's usable area before edge-rollup logic sees the taskbar region.
         ClampFenceToUsableWorkArea(control, preferPointerMonitor: true);
         if (TryAutoRollupAtUsableEdge(control)) return;
-        if (control.IsShiftHeaderDrag && string.Equals(_config.TabViewMode, "Compact", StringComparison.OrdinalIgnoreCase) &&
-            !string.IsNullOrWhiteSpace(control.Config.TabGroupId) && Math.Abs(control.HeaderDragDeltaX) >= 48)
-        {
-            ClearMergePreview();
-            var tabs = GetTabs(control.Config.TabGroupId);
-            foreach (var tab in tabs)
-            {
-                tab.Left = control.HeaderDragStartLeft;
-                tab.Top = control.HeaderDragStartTop;
-            }
-            var currentIndex = tabs.FindIndex(tab => tab.Id == control.Config.Id);
-            ReorderTabs(control.Config.TabGroupId, currentIndex, currentIndex + (control.HeaderDragDeltaX < 0 ? -1 : 1));
-            return;
-        }
         control.ClearEdgeDock();
         if (CanHeaderDragMerge(control.Config, control.IsShiftHeaderDrag) &&
             MergeByHeaderOverlap(control))
@@ -952,11 +976,11 @@ public partial class MainWindow : Window
 
     private bool MergeDetachedTabByHeaderOverlap(FenceControl sourceControl)
     {
-        var target = ReferenceEquals(sourceControl, _mergePreviewSource) &&
-                     _mergePreviewTarget != null && IsPointerOverHeader(_mergePreviewTarget.Config)
+        var target = ReferenceEquals(sourceControl, _mergePreviewSource) && _mergePreviewTarget != null
             ? _mergePreviewTarget
             : FindMergeTarget(sourceControl);
         if (target == null) return false;
+        var insertionIndex = target.GetTabInsertionIndexForHeaderPoint(sourceControl.GetHeaderDragMergePoint());
         if (_config.ConfirmTabCreation && System.Windows.MessageBox.Show(this,
                 $"将“{sourceControl.Config.Title}”移入“{target.Config.Title}”的标签组？",
                 "MiniFences", MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes)
@@ -966,7 +990,7 @@ public partial class MainWindow : Window
         }
 
         ClearMergePreview();
-        MergeDraggedTab(sourceControl.Config.Id, target.Config);
+        MergeDraggedTab(sourceControl.Config.Id, target.Config, insertionIndex);
         return true;
     }
 
@@ -977,20 +1001,11 @@ public partial class MainWindow : Window
             ClearMergePreview();
             return;
         }
-        if (_mergePreviewTarget != null && ReferenceEquals(sourceControl, _mergePreviewSource))
-        {
-            var pointer = Mouse.GetPosition(Workspace);
-            var activeTarget = _mergePreviewTarget.Config;
-            if (new Rect(activeTarget.Left, activeTarget.Top, activeTarget.Width, 34).Contains(pointer)) return;
-            ClearMergePreview();
-            return;
-        }
         var target = FindMergeTarget(sourceControl);
         if (ReferenceEquals(target, _mergePreviewTarget) && ReferenceEquals(sourceControl, _mergePreviewSource)) return;
         ClearMergePreview();
         _mergePreviewTarget = target;
         _mergePreviewSource = target == null ? null : sourceControl;
-        _mergePreviewTarget?.SetMergePreview(true);
         _mergePreviewSource?.SetMergeSourcePreview(true, target?.Config.Width / 3 ?? 0);
     }
 
@@ -1010,20 +1025,29 @@ public partial class MainWindow : Window
         if (!_config.EnableTabCreation) return null;
         sourceControl.SyncConfigFromLayout();
         var source = sourceControl.Config;
-        var pointer = Mouse.GetPosition(Workspace);
+        var sourceHeaderCenter = sourceControl.GetHeaderDragMergePoint();
         return Workspace.Children.OfType<FenceControl>()
             .Where(control => control.Config.Id != source.Id && control.Config.PageIndex == source.PageIndex)
             .Where(control => string.IsNullOrWhiteSpace(source.TabGroupId) ||
                               !string.Equals(control.Config.TabGroupId, source.TabGroupId, StringComparison.OrdinalIgnoreCase))
-            .Where(control => IsPointerInMergeZone(pointer, control.Config))
-            .OrderBy(control => Math.Abs((control.Config.Left + control.Config.Width / 2) - pointer.X))
+            .Where(control => control.IsHeaderMergePoint(sourceHeaderCenter))
+            // Overlapping Fences are common on the desktop. The user is aiming at
+            // the visible topmost title strip, not whichever hidden Fence happens
+            // to have the nearest geometric center.
+            .OrderByDescending(System.Windows.Controls.Panel.GetZIndex)
+            .ThenByDescending(control => Workspace.Children.IndexOf(control))
             .FirstOrDefault();
     }
 
     internal static bool IsPointerInMergeZone(System.Windows.Point pointer, FenceConfig target)
+        => IsPointInMergeZone(pointer, target, verticalTolerance: 0);
+
+    internal static bool IsPointInMergeZone(System.Windows.Point point, FenceConfig target,
+        double verticalTolerance)
     {
         var mergeZoneLeft = target.Left + target.Width / 3;
-        return new Rect(mergeZoneLeft, target.Top, target.Width / 3, 34).Contains(pointer);
+        return new Rect(mergeZoneLeft, target.Top - Math.Max(0, verticalTolerance),
+            target.Width / 3, 34 + Math.Max(0, verticalTolerance) * 2).Contains(point);
     }
 
     internal static bool IsMergeCandidate(FenceConfig source, FenceConfig target)
@@ -1033,7 +1057,8 @@ public partial class MainWindow : Window
         return new Rect(mergeZoneLeft, target.Top, target.Width / 3, 34).Contains(sourceCenter);
     }
 
-    private void StackFences(FenceConfig source, FenceConfig target, IEnumerable<string>? additionalAffectedFenceIds = null)
+    private void StackFences(FenceConfig source, FenceConfig target,
+        IEnumerable<string>? additionalAffectedFenceIds = null, int? insertionIndex = null)
     {
         var affectedFenceIds = GetRelatedFenceIds(source)
             .Concat(GetRelatedFenceIds(target))
@@ -1045,7 +1070,10 @@ public partial class MainWindow : Window
         var groupId = string.IsNullOrWhiteSpace(target.TabGroupId) ? Guid.NewGuid().ToString("N") : target.TabGroupId;
         target.TabGroupId = groupId;
         source.TabGroupId = groupId;
-        PlaceTabRelativeToTarget(source, target, Mouse.GetPosition(Workspace).X < target.Left + target.Width / 2);
+        if (insertionIndex is int targetInsertionIndex)
+            PlaceTabAtGroupIndex(source, groupId, targetInsertionIndex);
+        else
+            PlaceTabRelativeToTarget(source, target, Mouse.GetPosition(Workspace).X < target.Left + target.Width / 2);
         SynchronizeTabGroupPresentationState(target, _config.Fences.Where(fence =>
             fence.Id == source.Id ||
             string.Equals(fence.TabGroupId, groupId, StringComparison.OrdinalIgnoreCase)));
@@ -1095,20 +1123,15 @@ public partial class MainWindow : Window
         }
 
         var tabs = GetTabs(control.Config.TabGroupId);
-        var activeIndex = tabs.FindIndex(tab =>
-            string.Equals(tab.Id, control.Config.Id, StringComparison.OrdinalIgnoreCase));
-        var remainderIndex = GetTabDragRemainderIndex(activeIndex, draggedIndex, tabs.Count);
-        if (remainderIndex < 0 || remainderIndex == activeIndex) return;
+        if (draggedIndex < 0 || draggedIndex >= tabs.Count) return;
 
-        control.SyncConfigFromLayout();
-        SynchronizeTabGroupPresentationState(control.Config, tabs);
-        _activeTabByGroup[control.Config.TabGroupId] = tabs[remainderIndex].Id;
-        ReplaceActiveTabControl(control, tabs, remainderIndex);
-        Workspace.Children.OfType<FenceControl>()
-            .LastOrDefault(candidate => string.Equals(
-                candidate.Config.Id, tabs[remainderIndex].Id, StringComparison.OrdinalIgnoreCase))
-            ?.HideTabForActiveDrag(tabs[draggedIndex].Id);
-        ScheduleConfigSave();
+        // Keep the current FenceControl alive for the whole OLE drag. Replacing it
+        // here removed the tab Border that initiated DoDragDrop, so the newly built
+        // control received the release as a generic Fence drop and cancelled the
+        // reorder (the log showed Target changing to the temporary remainder tab).
+        // Hiding only the dragged tab preserves all tab DragOver/Drop handlers.
+        control.HideTabForActiveDrag(tabs[draggedIndex].Id);
+        AppLogger.Log($"Tab drag source preserved for reorder. Source={tabs[draggedIndex].Id}; Host={control.Config.Title}");
     }
 
     internal static int GetTabDragRemainderIndex(int activeIndex, int draggedIndex, int tabCount)
@@ -1198,11 +1221,21 @@ public partial class MainWindow : Window
         var moved = tabs[fromIndex];
         tabs.RemoveAt(fromIndex);
         tabs.Insert(toIndex, moved);
+        if (!string.IsNullOrWhiteSpace(groupId)) _activeTabByGroup[groupId] = moved.Id;
         var firstConfigIndex = _config.Fences.FindIndex(fence => tabs.Any(tab => tab.Id == fence.Id));
         _config.Fences.RemoveAll(fence => tabs.Any(tab => tab.Id == fence.Id));
         _config.Fences.InsertRange(Math.Max(0, firstConfigIndex), tabs);
+        AppLogger.Log($"Reordered tab group {groupId}. From={fromIndex}; To={toIndex}; Active={moved.Title}");
         RenderAffectedFenceGroups(tabs.Select(tab => tab.Id).ToArray());
         SaveConfigWithWarning();
+    }
+
+    private void RestoreCanceledTabDrag(string? groupId, int draggedIndex)
+    {
+        var tabs = GetTabs(groupId);
+        if (string.IsNullOrWhiteSpace(groupId) || draggedIndex < 0 || draggedIndex >= tabs.Count) return;
+        _activeTabByGroup[groupId] = tabs[draggedIndex].Id;
+        RenderAffectedFenceGroups(tabs.Select(tab => tab.Id).ToArray());
     }
 
     private void PlaceTabRelativeToTarget(FenceConfig source, FenceConfig target, bool before)
@@ -1211,6 +1244,20 @@ public partial class MainWindow : Window
         _config.Fences.Remove(source);
         var targetIndex = _config.Fences.IndexOf(target);
         _config.Fences.Insert(Math.Clamp(targetIndex + (before ? 0 : 1), 0, _config.Fences.Count), source);
+    }
+
+    private void PlaceTabAtGroupIndex(FenceConfig source, string groupId, int insertionIndex)
+    {
+        _config.Fences.Remove(source);
+        var groupTabs = _config.Fences.Where(fence =>
+            string.Equals(fence.TabGroupId, groupId, StringComparison.OrdinalIgnoreCase)).ToList();
+        insertionIndex = Math.Clamp(insertionIndex, 0, groupTabs.Count);
+        var configIndex = insertionIndex < groupTabs.Count
+            ? _config.Fences.IndexOf(groupTabs[insertionIndex])
+            : groupTabs.Count > 0
+                ? _config.Fences.IndexOf(groupTabs[^1]) + 1
+                : _config.Fences.Count;
+        _config.Fences.Insert(Math.Clamp(configIndex, 0, _config.Fences.Count), source);
     }
 
     private void DetachTab(string? groupId, int tabIndex, double left, double top, bool centerOnCursor = false)
@@ -1238,7 +1285,7 @@ public partial class MainWindow : Window
         SaveConfigWithWarning();
     }
 
-    private void MergeDraggedTab(string sourceFenceId, FenceConfig target)
+    private void MergeDraggedTab(string sourceFenceId, FenceConfig target, int? insertionIndex = null)
     {
         var source = _config.Fences.FirstOrDefault(fence =>
             string.Equals(fence.Id, sourceFenceId, StringComparison.OrdinalIgnoreCase));
@@ -1257,7 +1304,7 @@ public partial class MainWindow : Window
                 _activeTabByGroup.Remove(previousGroupId);
         }
 
-        StackFences(source, target, previousGroupIds);
+        StackFences(source, target, previousGroupIds, insertionIndex);
     }
 
     private void UnstackFence(FenceControl control)
@@ -2616,7 +2663,7 @@ public partial class MainWindow : Window
         _toggleFencesMenuItem.Click += (_, _) => ToggleFencesVisibility();
         menu.Items.Add(_toggleFencesMenuItem);
         _undoMenuItem = new Forms.ToolStripMenuItem("Undo Last Action");
-        _undoMenuItem.Click += (_, _) => Dispatcher.Invoke(UndoLastAction);
+        _undoMenuItem.Click += (_, _) => Dispatcher.Invoke(() => UndoLastAction());
         menu.Items.Add(_undoMenuItem);
         menu.Items.Add(new Forms.ToolStripSeparator());
         _exitMenuItem = new Forms.ToolStripMenuItem("Exit");
@@ -2636,7 +2683,9 @@ public partial class MainWindow : Window
 
     private void UndoLastActionMenuItem_Click(object sender, RoutedEventArgs e) => UndoLastAction();
 
-    private void UndoLastAction()
+    private void UndoLastAction() => UndoLastAction(this);
+
+    private void UndoLastAction(Window owner)
     {
         var transaction = _actionHistoryService.GetNextUndo();
         if (transaction is null) return;
@@ -2646,18 +2695,18 @@ public partial class MainWindow : Window
             RenderFences();
             ConfigureAutoOrganizerWatcher();
             SaveConfigWithWarning();
-            _settingsWindow?.RefreshFromMainWindow();
         }
         if (result.Errors.Count > 0)
-            System.Windows.MessageBox.Show(this, string.Join(Environment.NewLine, result.Errors),
+            System.Windows.MessageBox.Show(owner, string.Join(Environment.NewLine, result.Errors),
                 "MiniFences", MessageBoxButton.OK, MessageBoxImage.Warning);
         RefreshUndoCommands();
+        _settingsWindow?.RefreshFromMainWindow();
     }
 
     private void RefreshUndoCommands()
     {
         var transaction = _actionHistoryService.GetNextUndo();
-        var header = transaction is null ? "撤销上一步" : $"撤销：{transaction.DisplayName}";
+        var header = _loc.T("UndoLastAction");
         if (DesktopUndoMenuItem is not null)
         {
             DesktopUndoMenuItem.Header = header;
@@ -4196,7 +4245,7 @@ public partial class MainWindow : Window
         if (!overFenceItem)
         {
             foreach (var fence in Workspace.Children.OfType<FenceControl>()) fence.ClearItemSelection();
-            Keyboard.ClearFocus();
+            if (ShouldClearKeyboardFocusForGlobalClick(overMiniFencesWindow)) Keyboard.ClearFocus();
         }
         // UI Automation only sees Explorer's native ListView items. Loose
         // MiniFences icons are WPF controls in a no-activate desktop window,
@@ -4261,6 +4310,9 @@ public partial class MainWindow : Window
         bool overDesktopItem) =>
         !overMiniFencesWindow && (!overExplorerDesktop || !overDesktopItem);
 
+    internal static bool ShouldClearKeyboardFocusForGlobalClick(bool overMiniFencesWindow) =>
+        !overMiniFencesWindow;
+
     private bool IsScreenPointOverLooseDesktopIcon(System.Drawing.Point screenPoint)
     {
         if (!TryGetWorkspacePointFromPhysicalScreen(screenPoint, out var workspacePoint)) return false;
@@ -4314,9 +4366,13 @@ public partial class MainWindow : Window
 
     internal bool IsMiniFencesWindowAtScreenPoint(System.Drawing.Point screenPoint)
     {
-        var handle = new WindowInteropHelper(this).Handle;
-        return handle != IntPtr.Zero &&
-               WindowFromPoint(new NativePoint(screenPoint.X, screenPoint.Y)) == handle;
+        var window = WindowFromPoint(new NativePoint(screenPoint.X, screenPoint.Y));
+        if (window == IntPtr.Zero) return false;
+        GetWindowThreadProcessId(window, out var processId);
+        // Settings, dialogs, ComboBox popups and ContextMenus use their own HWNDs.
+        // Treat every window owned by this process as MiniFences so the desktop
+        // mouse hook cannot clear WPF focus before their Click/DropDown events run.
+        return processId == (uint)Environment.ProcessId;
     }
 
     private bool IsScreenPointInsideDesktopWorkArea(System.Drawing.Point screenPoint)
@@ -5346,22 +5402,9 @@ public partial class MainWindow : Window
     internal bool IsStartWithWindowsEnabled => _startupService.IsEnabled();
     internal bool CanDeleteSettingsCurrentPage => CanDeleteCurrentPage(GetPageCount());
     internal IReadOnlyList<ActionTransaction> GetActionHistory() => _actionHistoryService.GetTransactions();
-    internal bool CanUndoAction(string id) => _actionHistoryService.GetNextUndo()?.Id == id;
+    internal bool CanUndoLastAction => _actionHistoryService.GetNextUndo() is not null;
 
-    internal void UndoActionFromSettings(string id, Window owner)
-    {
-        var result = _actionHistoryService.Undo(id, _config, _configService);
-        if (result.RestoredCount > 0)
-        {
-            RenderFences();
-            ConfigureAutoOrganizerWatcher();
-            SaveConfigWithWarning();
-        }
-        if (result.Errors.Count > 0)
-            System.Windows.MessageBox.Show(owner, string.Join(Environment.NewLine, result.Errors),
-                "MiniFences", MessageBoxButton.OK, MessageBoxImage.Warning);
-        RefreshUndoCommands();
-    }
+    internal void UndoLastActionFromSettings(Window owner) => UndoLastAction(owner);
 
     internal void ClearActionHistory()
     {
@@ -5397,16 +5440,18 @@ public partial class MainWindow : Window
     internal IReadOnlyList<FolderItem> SettingsGetFenceItems(string fenceId)
     {
         var fence = _config.Fences.FirstOrDefault(candidate => string.Equals(candidate.Id, fenceId, StringComparison.OrdinalIgnoreCase));
-        return fence?.IsDesktopGroup == true
-            ? new FolderItemService().LoadAssignedItems(fence.AssignedPaths)
-            : Array.Empty<FolderItem>();
+        if (fence is null) return Array.Empty<FolderItem>();
+        var service = new FolderItemService();
+        return fence.IsDesktopGroup
+            ? service.LoadAssignedItems(fence.AssignedPaths)
+            : service.LoadItems(fence.FolderPath);
     }
 
     internal IReadOnlyList<FolderItem> SettingsGetUnassignedDesktopItems()
     {
         var assigned = _config.Fences.Where(fence => fence.IsDesktopGroup)
             .SelectMany(fence => fence.AssignedPaths)
-            .Select(TryGetFullPath)
+            .Select(path => FolderItemService.IsShellNamespacePath(path) ? path : TryGetFullPath(path))
             .Where(path => path != null)
             .Cast<string>()
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
@@ -5414,7 +5459,10 @@ public partial class MainWindow : Window
                 .Where(ShouldShowLooseDesktopItem)
                 .Distinct(StringComparer.OrdinalIgnoreCase))
             .Where(path => !assigned.Contains(Path.GetFullPath(path)));
-        return new FolderItemService().LoadAssignedItems(paths);
+        var service = new FolderItemService();
+        var systemItems = FolderItemService.LoadVisibleDesktopShellItems()
+            .Where(item => !assigned.Contains(item.FullPath));
+        return systemItems.Concat(service.LoadAssignedItems(paths)).ToArray();
     }
 
     internal void SettingsAssignDesktopItems(string fenceId, IReadOnlyList<string> paths)
@@ -5451,7 +5499,7 @@ public partial class MainWindow : Window
         var fence = FindFence(fenceId);
         if (fence == null) return 0;
         return fence.IsDesktopGroup
-            ? fence.AssignedPaths.Count(path => File.Exists(path) || Directory.Exists(path))
+            ? fence.AssignedPaths.Count(path => FolderItemService.IsShellNamespacePath(path) || File.Exists(path) || Directory.Exists(path))
             : Directory.Exists(fence.FolderPath)
                 ? Directory.EnumerateFileSystemEntries(fence.FolderPath).Count()
                 : 0;
@@ -5632,13 +5680,37 @@ public partial class MainWindow : Window
 
     internal void SettingsSetTabOptions(string mode, string widthMode, bool enableCreation, bool confirmCreation, bool hoverSwitch)
     {
-        _config.TabViewMode = string.Equals(mode, "Strip", StringComparison.OrdinalIgnoreCase) ? "Strip" : "Compact";
-        _config.TabWidthMode = string.Equals(widthMode, "Equal", StringComparison.OrdinalIgnoreCase) ? "Equal" : "Content";
+        var normalizedMode = string.Equals(mode, "Strip", StringComparison.OrdinalIgnoreCase) ? "Strip" : "Compact";
+        var normalizedWidthMode = string.Equals(widthMode, "Equal", StringComparison.OrdinalIgnoreCase) ? "Equal" : "Content";
+        if (string.Equals(_config.TabViewMode, normalizedMode, StringComparison.OrdinalIgnoreCase) &&
+            string.Equals(_config.TabWidthMode, normalizedWidthMode, StringComparison.OrdinalIgnoreCase) &&
+            _config.EnableTabCreation == enableCreation && _config.ConfirmTabCreation == confirmCreation &&
+            _config.HoverSwitchTabs == hoverSwitch)
+            return;
+
+        _config.TabViewMode = normalizedMode;
+        _config.TabWidthMode = normalizedWidthMode;
         _config.EnableTabCreation = enableCreation;
         _config.ConfirmTabCreation = confirmCreation;
         _config.HoverSwitchTabs = hoverSwitch;
-        RenderFences();
+        RefreshVisibleFenceTabPresentation();
         SaveConfigWithWarning();
+    }
+
+    private void RefreshVisibleFenceTabPresentation()
+    {
+        foreach (var control in Workspace.Children.OfType<FenceControl>())
+        {
+            var tabs = GetTabs(control.Config.TabGroupId);
+            if (tabs.Count == 0) tabs = [control.Config];
+            var tabIndex = tabs.FindIndex(tab =>
+                string.Equals(tab.Id, control.Config.Id, StringComparison.OrdinalIgnoreCase));
+            control.SetTabStatus(tabs.Count, Math.Max(0, tabIndex), tabs.Select(tab => tab.Title).ToArray(),
+                string.Equals(_config.TabViewMode, "Strip", StringComparison.OrdinalIgnoreCase),
+                _config.HoverSwitchTabs,
+                string.Equals(_config.TabWidthMode, "Equal", StringComparison.OrdinalIgnoreCase), tabs);
+        }
+        AppLogger.Log("Refreshed visible Fence tab presentation without reloading desktop items.");
     }
 
     internal void SettingsSetRollupOptions(bool enabled, bool doubleClick, bool autoEdge,

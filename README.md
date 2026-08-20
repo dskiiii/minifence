@@ -8,10 +8,10 @@ MiniFences 是一款适用于 Windows 10/11 的轻量桌面分区管理器。它
 
 ### 下载与运行
 
-请从 [GitHub Releases](https://github.com/dskiiii/minifence/releases) 下载 0.23.0：
+请从 [GitHub Releases](https://github.com/dskiiii/minifence/releases) 下载 0.24.37：
 
-- `MiniFences-win-x64-0.23.0.zip`：推荐，自带 .NET 运行库；解压后直接运行 `MiniFences.exe`。
-- `MiniFences-win-x64-0.23.0-slim.zip`：精简版；需要预先安装 Microsoft .NET 8 Desktop Runtime。
+- `MiniFences-win-x64-0.24.37.zip`：推荐，自带 .NET 运行库；解压后直接运行 `MiniFences.exe`。
+- `MiniFences-win-x64-0.24.37-slim.zip`：精简版；需要预先安装 Microsoft .NET 8 Desktop Runtime。
 
 程序目前没有代码签名，Windows SmartScreen 可能显示“未知发布者”。请只从本仓库下载，并使用同名 `.sha256` 文件核对压缩包。
 
@@ -40,7 +40,7 @@ MiniFences 是一款适用于 Windows 10/11 的轻量桌面分区管理器。它
 
 ```powershell
 .\.dotnet\dotnet.exe run --project MiniFences.SmokeTests\MiniFences.SmokeTests.csproj -c Release
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\publish-minifences.ps1 -Version 0.23.0
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\publish-minifences.ps1 -Version 0.24.37
 ```
 
 ## English
@@ -49,10 +49,10 @@ MiniFences is a lightweight desktop organizer for Windows 10 and 11. It groups i
 
 ### Download and run
 
-Download 0.23.0 from [GitHub Releases](https://github.com/dskiiii/minifence/releases):
+Download 0.24.37 from [GitHub Releases](https://github.com/dskiiii/minifence/releases):
 
-- `MiniFences-win-x64-0.23.0.zip`: recommended self-contained build; no separate .NET installation is required.
-- `MiniFences-win-x64-0.23.0-slim.zip`: smaller framework-dependent build; Microsoft .NET 8 Desktop Runtime must be installed first.
+- `MiniFences-win-x64-0.24.37.zip`: recommended self-contained build; no separate .NET installation is required.
+- `MiniFences-win-x64-0.24.37-slim.zip`: smaller framework-dependent build; Microsoft .NET 8 Desktop Runtime must be installed first.
 
 The application is currently unsigned, so Windows SmartScreen may display an “Unknown publisher” warning. Download only from this repository and verify the archive with the matching `.sha256` file.
 
@@ -62,5 +62,5 @@ Windows and the .NET 8 SDK are required:
 
 ```powershell
 .\.dotnet\dotnet.exe run --project MiniFences.SmokeTests\MiniFences.SmokeTests.csproj -c Release
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\publish-minifences.ps1 -Version 0.23.0
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\publish-minifences.ps1 -Version 0.24.37
 ```

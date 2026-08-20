@@ -20,9 +20,11 @@ public partial class FenceControl : System.Windows.Controls.UserControl
     private const string TabFenceIdFormat = "MiniFences.TabFenceId";
     private const string TabPreviewContextFormat = "MiniFences.TabDragPreviewContext";
     private const string TabIndexFormat = "MiniFences.TabIndex";
+    private const string TabExternalMoveAllowedFormat = "MiniFences.TabExternalMoveAllowed";
     private const double ExpandedMinHeight = 180;
     internal const double CollapsedHeight = 34;
     private const double ResizeHandleRevealDistance = 32;
+    private const int TabReorderAnimationDurationMs = 80;
     private static FenceAppearance? _copiedStyle;
     private readonly FolderItemService _folderItemService = new();
     private readonly ShellContextMenuService _shellContextMenuService = new();
@@ -69,6 +71,11 @@ public partial class FenceControl : System.Windows.Controls.UserControl
     private CancellationTokenSource? _iconLoadCancellation;
     private readonly Stack<string> _portalBackHistory = new();
     private IReadOnlyList<FenceConfig>? _tabConfigs;
+    private bool _tabStripEqualWidths;
+    private int? _tabReorderPreviewFromIndex;
+    private int? _tabReorderPreviewToIndex;
+    private int? _activeTabDragHiddenIndex;
+    private bool _activeTabDragSlotCollapsed;
     private DataTemplate? _iconItemTemplate;
 
     public event EventHandler? Changed;
@@ -84,13 +91,15 @@ public partial class FenceControl : System.Windows.Controls.UserControl
     public event Action<int, int>? TabReorderRequested;
     public event Action<int, System.Drawing.Point>? TabDetachRequested;
     public event Action<int>? TabDragStarted;
-    public event Action<string>? TabMergeRequested;
+    public event Action<int>? TabDragCanceled;
+    public event Action<string, int>? TabMergeRequested;
     public event EventHandler? UnstackRequested;
     public event EventHandler<DesktopItemsAssignedEventArgs>? DesktopItemsAssigned;
     public event EventHandler<DesktopItemsReleasedEventArgs>? DesktopItemsReleased;
     public event EventHandler? DesktopItemDragStarted;
     public event EventHandler? DesktopItemDragEnded;
     public event EventHandler? ItemsChanged;
+    public event EventHandler? ContentRefreshed;
     public event EventHandler? HeaderDragCompleted;
     public event EventHandler? HeaderDragMoved;
     public event EventHandler? HeaderDragCanceled;
@@ -117,8 +126,6 @@ public partial class FenceControl : System.Windows.Controls.UserControl
     internal Func<System.Drawing.Point, bool>? IsExplorerDesktopPointForDrag { get; set; }
     internal Func<System.Drawing.Point, bool>? IsMiniFencesSurfacePointForDrag { get; set; }
     internal Func<System.Drawing.Point, Rect>? DragWorkAreaProvider { get; set; }
-    internal bool AllowTabDetachWithoutShiftForTesting { get; set; }
-
     internal IReadOnlyList<FolderItem> LoadedItemsForTesting =>
         ItemsList.Items.OfType<FolderItem>().ToArray();
     internal int RealizedItemCountForTesting =>
@@ -131,6 +138,7 @@ public partial class FenceControl : System.Windows.Controls.UserControl
     internal string DisplayedTitleForTesting => TitleText.Text;
     internal bool IsCollapsedForTesting => Config.IsCollapsed;
     internal bool IsTitleAtBottomForTesting => Grid.GetRow(TitleBar) == 2;
+    internal bool IsMergePreviewVisibleForTesting => MergePreview.Opacity > 0;
     internal bool IsContentVisibleForTesting => ContentArea.Visibility == Visibility.Visible &&
                                                  FooterPanel.Visibility == Visibility.Visible;
     internal System.Windows.HorizontalAlignment TitleAlignmentForTesting => TitleText.HorizontalAlignment;
@@ -154,6 +162,29 @@ public partial class FenceControl : System.Windows.Controls.UserControl
         TabStripPanel.ColumnDefinitions.Select(column => column.Width).ToArray();
     internal int VisibleTabCountForTesting =>
         TabStripPanel.Children.OfType<UIElement>().Count(child => child.Visibility == Visibility.Visible);
+    internal bool IsTabDragSlotPreservedForTesting(int tabIndex) =>
+        TabStripPanel.Children.OfType<Border>().FirstOrDefault(tab => tab.Tag is int index && index == tabIndex) is
+            { Visibility: Visibility.Visible, IsHitTestVisible: false, Opacity: < 1 };
+    internal void CollapseActiveTabDragSlotForTesting(bool collapsed) =>
+        SetActiveTabDragSlotCollapsed(collapsed);
+    internal bool AreTabReorderTransformsResetForTesting =>
+        TabStripPanel.Children.OfType<Border>().All(tab =>
+            tab.RenderTransform is not System.Windows.Media.TranslateTransform transform ||
+            Math.Abs(transform.X) < 0.01);
+    internal bool AreRemainingTabSlotsContiguousForTesting =>
+        TabStripPanel.Children.OfType<Border>()
+            .Where(tab => tab.Visibility == Visibility.Visible)
+            .OrderBy(Grid.GetColumn)
+            .Select((tab, index) => Grid.GetColumn(tab) == index)
+            .All(matches => matches);
+    internal void PreviewTabReorderForTesting(int fromIndex, int toIndex) =>
+        PreviewTabReorder(fromIndex, toIndex);
+    internal IReadOnlyList<int> TabGridColumnsForTesting =>
+        TabStripPanel.Children.OfType<Border>()
+            .Where(tab => tab.Tag is int)
+            .OrderBy(tab => (int)tab.Tag)
+            .Select(Grid.GetColumn)
+            .ToArray();
     internal bool AreTabTitlesCenteredForTesting =>
         TabStripPanel.Children.OfType<Border>()
             .Select(border => border.Child)
@@ -215,6 +246,7 @@ public partial class FenceControl : System.Windows.Controls.UserControl
         {
             _refreshTimer.Stop();
             LoadFolderItems();
+            ContentRefreshed?.Invoke(this, EventArgs.Empty);
         };
         Width = Config.Width;
         Height = Config.Height;
@@ -243,6 +275,7 @@ public partial class FenceControl : System.Windows.Controls.UserControl
         RenameFenceMenuItem.Header = _loc.T("RenameFence");
         ChooseFolderMenuItem.Header = _loc.T("ChooseFolder");
         OpenBoundFolderMenuItem.Header = _loc.T("OpenBoundFolder");
+        MovePageMenuItem.Header = _loc.T("MovePage");
         MoveToPreviousPageMenuItem.Header = _loc.T("MoveToPreviousPage");
         MoveToNextPageMenuItem.Header = _loc.T("MoveToNextPage");
         MoveToNewPageMenuItem.Header = _loc.T("MoveToNewPage");
@@ -288,6 +321,11 @@ public partial class FenceControl : System.Windows.Controls.UserControl
         bool hoverSwitch = false, bool equalTabWidths = false, IReadOnlyList<FenceConfig>? tabConfigs = null)
     {
         _tabConfigs = tabConfigs;
+        _tabStripEqualWidths = equalTabWidths;
+        _tabReorderPreviewFromIndex = null;
+        _tabReorderPreviewToIndex = null;
+        _activeTabDragHiddenIndex = null;
+        _activeTabDragSlotCollapsed = false;
         TabStatusText.Text = count > 1 ? $"{index + 1}/{count}" : string.Empty;
         TabNavigationPanel.Visibility = count > 1 && !useTabStrip ? Visibility.Visible : Visibility.Collapsed;
         TabStripPanel.Children.Clear();
@@ -305,8 +343,10 @@ public partial class FenceControl : System.Windows.Controls.UserControl
         for (var tabIndex = 0; tabIndex < count; tabIndex++)
         {
             var selectedIndex = tabIndex;
+            System.Windows.Point? tabDragStart = null;
             var tab = new Border
             {
+                Tag = selectedIndex,
                 MinWidth = equalTabWidths ? 0 : 72,
                 MaxWidth = equalTabWidths ? double.PositiveInfinity : 150,
                 Padding = new Thickness(12, 0, 12, 0),
@@ -328,40 +368,120 @@ public partial class FenceControl : System.Windows.Controls.UserControl
             };
             tab.MouseLeftButtonDown += (_, e) =>
             {
-                // A normal drag belongs to the whole Fence. Shift reserves the gesture
-                // for tab ordering/detaching, matching browser-style tab handling.
-                e.Handled = IsTabDetachGestureActive();
+                if (!ShouldStartTabOperation(Keyboard.Modifiers))
+                {
+                    // Let the event bubble to TitleBar so an ordinary drag moves
+                    // the whole combined Fence. Only Shift turns this into a tab
+                    // reorder/detach gesture.
+                    tabDragStart = null;
+                    return;
+                }
+                tabDragStart = e.GetPosition(tab);
+                e.Handled = true;
             };
             tab.MouseLeftButtonUp += (_, e) =>
             {
+                tabDragStart = null;
                 if (!_isDragging) TabSelectedRequested?.Invoke(selectedIndex);
             };
             tab.PreviewMouseMove += (_, e) =>
             {
-                if (e.LeftButton != MouseButtonState.Pressed || !IsTabDetachGestureActive()) return;
+                if (e.LeftButton != MouseButtonState.Pressed || tabDragStart is not { } start) return;
+                var current = e.GetPosition(tab);
+                if (Math.Abs(current.X - start.X) < SystemParameters.MinimumHorizontalDragDistance &&
+                    Math.Abs(current.Y - start.Y) < SystemParameters.MinimumVerticalDragDistance) return;
+                tabDragStart = null;
                 var data = new System.Windows.DataObject(TabIndexFormat, selectedIndex);
                 var sourceFenceId = _tabConfigs != null && selectedIndex < _tabConfigs.Count
                     ? _tabConfigs[selectedIndex].Id
                     : Config.Id;
                 data.SetData(TabFenceIdFormat, sourceFenceId);
+                var externalMoveAllowed = (Keyboard.Modifiers & ModifierKeys.Shift) != 0;
+                data.SetData(TabExternalMoveAllowedFormat, externalMoveAllowed);
+                AppLogger.Log($"Tab drag initiated. Source={sourceFenceId}; ExternalMoveAllowed={externalMoveAllowed}");
+                var sourceFenceBounds = GetScreenBoundsForTabDrag();
+                var sourceReorderBounds = GetScreenHeaderReorderBoundsForTabDrag();
                 var dragPreview = CreateTabDragPreview(selectedIndex);
-                var dragPreviewContext = new TabDragPreviewContext(dragPreview, (FenceControl)dragPreview.Content);
+                var dragPreviewRoot = (Grid)dragPreview.Content;
+                var dragPreviewFence = dragPreviewRoot.Children.OfType<FenceControl>().Single();
+                var compactTabPreview = dragPreviewRoot.Children.OfType<Border>().Single();
+                var sourceTabWidth = Math.Max(72, tab.ActualWidth > 0 ? tab.ActualWidth : 96);
+                var sourceTabs = TabStripPanel.Children.OfType<Border>()
+                    .Where(candidate => candidate.Tag is int)
+                    .OrderBy(candidate => (int)candidate.Tag)
+                    .ToArray();
+                var sourceTabLefts = sourceTabs
+                    .Select(candidate => candidate.TranslatePoint(new System.Windows.Point(), TabStripPanel).X)
+                    .ToArray();
+                var sourceTabWidths = sourceTabs
+                    .Select(candidate => Math.Max(1, candidate.ActualWidth))
+                    .ToArray();
+                var dragPreviewContext = new TabDragPreviewContext(
+                    dragPreview, dragPreviewFence, compactTabPreview, ResetTabReorderPreview,
+                    SetActiveTabDragSlotCollapsed, sourceTabWidth, externalMoveAllowed,
+                    sourceTabLefts, sourceTabWidths);
                 data.SetData(TabPreviewContextFormat, dragPreviewContext);
                 var dropPoint = Forms.Cursor.Position;
-                System.Windows.GiveFeedbackEventHandler followPreview = (_, _) => PositionTabDragPreview(dragPreview);
+                void RefreshTabDragPreviewPosition(bool? shiftOverride = null)
+                {
+                    var shiftHeld = shiftOverride ?? dragPreviewContext.ExternalMoveAllowed;
+                    dragPreviewContext.SetExternalMoveAllowed(shiftHeld);
+                    var cursor = Forms.Cursor.Position;
+                    var collapseSourceSlot = ShouldCollapseDraggedTabSlot(
+                        shiftHeld, sourceReorderBounds,
+                        new System.Windows.Point(cursor.X, cursor.Y));
+                    dragPreviewContext.SetSourceSlotCollapsed(collapseSourceSlot);
+                    if (shiftHeld && !collapseSourceSlot && !sourceReorderBounds.IsEmpty)
+                    {
+                        var localPointer = TabStripPanel.PointFromScreen(
+                            new System.Windows.Point(cursor.X, cursor.Y));
+                        PreviewTabReorder(selectedIndex,
+                            dragPreviewContext.GetReorderTargetIndex(localPointer.X, selectedIndex));
+                    }
+                }
+                System.Windows.GiveFeedbackEventHandler followPreview = (_, _) =>
+                    RefreshTabDragPreviewPosition(dragPreviewContext.ExternalMoveAllowed);
+                System.Windows.QueryContinueDragEventHandler trackShift = (_, args) =>
+                    RefreshTabDragPreviewPosition(
+                        (args.KeyStates & System.Windows.DragDropKeyStates.ShiftKey) != 0);
                 var previewFollowTimer = new DispatcherTimer(DispatcherPriority.Send)
                 {
-                    Interval = TimeSpan.FromMilliseconds(16)
+                    Interval = TimeSpan.FromMilliseconds(8)
                 };
-                previewFollowTimer.Tick += (_, _) => PositionTabDragPreview(dragPreview);
+                previewFollowTimer.Tick += (_, _) =>
+                    RefreshTabDragPreviewPosition(dragPreviewContext.ExternalMoveAllowed);
+                System.Threading.Timer? nativePreviewFollowTimer = null;
                 System.Windows.DragDropEffects effect;
-                tab.Visibility = Visibility.Collapsed;
+                tab.Opacity = 0;
+                tab.IsHitTestVisible = false;
                 try
                 {
                     tab.GiveFeedback += followPreview;
-                    PositionTabDragPreview(dragPreview);
+                    tab.QueryContinueDrag += trackShift;
+                    // Start as a tab-sized preview. It expands to the full Fence
+                    // only after leaving every tab/merge target.
+                    dragPreviewContext.SetMergePreview(true, sourceTabWidth);
+                    RefreshTabDragPreviewPosition();
                     dragPreview.Show();
-                    PositionTabDragPreview(dragPreview);
+                    RefreshTabDragPreviewPosition();
+                    PositionTabDragPreview(dragPreview,
+                        ShouldConstrainTabDragToHeader(dragPreviewContext.ExternalMoveAllowed),
+                        sourceFenceBounds);
+                    var previewHandle = new WindowInteropHelper(dragPreview).Handle;
+                    var previewScale = PresentationSource.FromVisual(this)?.CompositionTarget?.TransformToDevice
+                                       ?? System.Windows.Media.Matrix.Identity;
+                    nativePreviewFollowTimer = new System.Threading.Timer(_ =>
+                    {
+                        var (previewWidth, previewHeight) = dragPreviewContext.GetCurrentSize();
+                        PositionTabDragPreviewHandle(
+                            previewHandle,
+                            previewWidth,
+                            previewHeight,
+                            previewScale.M11,
+                            previewScale.M22,
+                            ShouldConstrainTabDragToHeader(IsShiftKeyDown()),
+                            sourceFenceBounds);
+                    }, null, TimeSpan.Zero, TimeSpan.FromMilliseconds(4));
                     previewFollowTimer.Start();
                     TabDragStarted?.Invoke(selectedIndex);
                     effect = System.Windows.DragDrop.DoDragDrop(tab, data, System.Windows.DragDropEffects.Move);
@@ -370,14 +490,27 @@ public partial class FenceControl : System.Windows.Controls.UserControl
                 finally
                 {
                     previewFollowTimer.Stop();
+                    nativePreviewFollowTimer?.Dispose();
                     tab.GiveFeedback -= followPreview;
-                    dragPreviewContext.SetMergePreview(false, 0);
+                    tab.QueryContinueDrag -= trackShift;
+                    // Never expand the compact drag window as part of cleanup.
+                    // A Drop handler used to restore the full Fence one frame
+                    // before DoDragDrop returned, producing a large release flash.
+                    dragPreview.Hide();
+                    dragPreviewContext.SetSourceSlotCollapsed(false);
                     dragPreview.Close();
                     tab.Visibility = Visibility.Visible;
+                    tab.Opacity = 1;
+                    tab.IsHitTestVisible = true;
                     Mouse.SetCursor(System.Windows.Input.Cursors.Arrow);
                 }
                 if (effect == System.Windows.DragDropEffects.None)
-                    TabDetachRequested?.Invoke(selectedIndex, dropPoint);
+                {
+                    if (dragPreviewContext.ExternalMoveAllowed && ShouldDetachTabDrop(sourceFenceBounds, dropPoint))
+                        TabDetachRequested?.Invoke(selectedIndex, dropPoint);
+                    else
+                        TabDragCanceled?.Invoke(selectedIndex);
+                }
             };
             tab.GiveFeedback += (_, e) =>
             {
@@ -390,36 +523,56 @@ public partial class FenceControl : System.Windows.Controls.UserControl
                 var sourceFenceId = DesktopDragData.GetCachedData(e.Data, TabFenceIdFormat) as string;
                 var belongsToThisGroup = sourceFenceId != null && _tabConfigs?.Any(config =>
                     string.Equals(config.Id, sourceFenceId, StringComparison.OrdinalIgnoreCase)) == true;
-                var inMergeZone = IsTabMergeDropPoint(e.GetPosition(this));
+                var externalMoveAllowed = IsExternalTabMoveAllowed(e.Data);
+                var inMergeZone = IsTabMergeTargetPoint(e.GetPosition(this));
                 var canMergeOrReturn = sourceFenceId != null && inMergeZone &&
-                                       (belongsToThisGroup || CanAcceptTabMerge(sourceFenceId));
+                                       (belongsToThisGroup ||
+                                        externalMoveAllowed && CanAcceptTabMerge(sourceFenceId));
                 var canReorder = belongsToThisGroup &&
                                  DesktopDragData.GetCachedData(e.Data, TabIndexFormat) is int fromIndex && fromIndex != selectedIndex;
-                e.Effects = IsTabDetachGestureActive() && (canMergeOrReturn || canReorder)
+                if (belongsToThisGroup &&
+                    DesktopDragData.GetCachedData(e.Data, TabIndexFormat) is int previewFromIndex)
+                {
+                    var reorderPreviewContext = DesktopDragData.GetCachedData(
+                        e.Data, TabPreviewContextFormat) as TabDragPreviewContext;
+                    PreviewTabReorder(previewFromIndex,
+                        reorderPreviewContext?.GetReorderTargetIndex(
+                            e.GetPosition(TabStripPanel).X, previewFromIndex)
+                        ?? GetTabReorderTargetIndex(e.GetPosition(TabStripPanel).X, previewFromIndex));
+                }
+                else if (DesktopDragData.GetCachedData(e.Data, TabPreviewContextFormat) is TabDragPreviewContext externalPreviewContext)
+                    externalPreviewContext.ClearReorderPreview();
+                e.Effects = canMergeOrReturn || canReorder
                     ? System.Windows.DragDropEffects.Move
                     : System.Windows.DragDropEffects.None;
                 if (DesktopDragData.GetCachedData(e.Data, TabPreviewContextFormat) is TabDragPreviewContext previewContext)
-                    previewContext.SetMergePreview(canMergeOrReturn, ActualWidth / 3);
+                    previewContext.SetMergePreview(
+                        belongsToThisGroup || canMergeOrReturn,
+                        belongsToThisGroup ? Math.Max(72, tab.ActualWidth) : ActualWidth / 3);
                 e.Handled = true;
             };
             tab.Drop += (_, e) =>
             {
-                if (DesktopDragData.GetCachedData(e.Data, TabPreviewContextFormat) is TabDragPreviewContext previewContext)
-                    previewContext.SetMergePreview(false, 0);
                 var sourceFenceId = DesktopDragData.GetCachedData(e.Data, TabFenceIdFormat) as string;
                 var belongsToThisGroup = sourceFenceId != null && _tabConfigs?.Any(config =>
                     string.Equals(config.Id, sourceFenceId, StringComparison.OrdinalIgnoreCase)) == true;
-                if (IsTabDetachGestureActive() && sourceFenceId != null && !belongsToThisGroup &&
-                    CanAcceptTabMerge(sourceFenceId) && IsTabMergeDropPoint(e.GetPosition(this)))
+                if (sourceFenceId != null && !belongsToThisGroup &&
+                    IsExternalTabMoveAllowed(e.Data) && CanAcceptTabMerge(sourceFenceId) &&
+                    IsTabMergeTargetPoint(e.GetPosition(this)))
                 {
-                    TabMergeRequested?.Invoke(sourceFenceId);
+                    TabMergeRequested?.Invoke(sourceFenceId,
+                        GetTabInsertionIndex(e.GetPosition(TabStripPanel).X));
                     e.Effects = System.Windows.DragDropEffects.Move;
                 }
-                else if (IsTabDetachGestureActive() && belongsToThisGroup &&
+                else if (belongsToThisGroup &&
                          DesktopDragData.GetCachedData(e.Data, TabIndexFormat) is int fromIndex &&
                          (fromIndex != selectedIndex || IsTabMergeDropPoint(e.GetPosition(this))))
                 {
-                    if (fromIndex != selectedIndex) TabReorderRequested?.Invoke(fromIndex, selectedIndex);
+                    var targetIndex = _tabReorderPreviewFromIndex == fromIndex &&
+                                      _tabReorderPreviewToIndex is int previewTarget
+                        ? previewTarget
+                        : selectedIndex;
+                    if (fromIndex != targetIndex) TabReorderRequested?.Invoke(fromIndex, targetIndex);
                     else TabSelectedRequested?.Invoke(fromIndex);
                     e.Effects = System.Windows.DragDropEffects.Move;
                 }
@@ -436,9 +589,168 @@ public partial class FenceControl : System.Windows.Controls.UserControl
         UpdateTabStripCornerRadii(UsesBottomTitleLayout());
     }
 
+    private void PreviewTabReorder(int fromIndex, int toIndex)
+    {
+        var count = _tabConfigs?.Count ?? 0;
+        if (count < 2 || fromIndex < 0 || fromIndex >= count || toIndex < 0 || toIndex >= count) return;
+        if (_tabReorderPreviewFromIndex == fromIndex && _tabReorderPreviewToIndex == toIndex) return;
+        var previousLeft = TabStripPanel.Children.OfType<Border>()
+            .ToDictionary(tab => tab, tab => tab.TranslatePoint(new System.Windows.Point(), TabStripPanel).X);
+        ClearTabReorderTransforms();
+        _tabReorderPreviewFromIndex = fromIndex;
+        _tabReorderPreviewToIndex = toIndex;
+        AppLogger.Log($"Tab reorder preview changed. From={fromIndex}; To={toIndex}");
+        var order = BuildTabReorderPreviewOrder(count, fromIndex, toIndex);
+        for (var column = 0; column < count && column < TabStripPanel.ColumnDefinitions.Count; column++)
+            TabStripPanel.ColumnDefinitions[column].Width = _tabStripEqualWidths
+                ? new GridLength(1, GridUnitType.Star)
+                : GridLength.Auto;
+        foreach (var tab in TabStripPanel.Children.OfType<Border>())
+        {
+            if (tab.Tag is not int originalIndex) continue;
+            var previewIndex = order.IndexOf(originalIndex);
+            if (previewIndex >= 0) Grid.SetColumn(tab, previewIndex);
+        }
+        TabStripPanel.UpdateLayout();
+        foreach (var tab in TabStripPanel.Children.OfType<Border>())
+        {
+            if (!previousLeft.TryGetValue(tab, out var oldLeft) ||
+                tab.Tag is int originalIndex && originalIndex == fromIndex) continue;
+            var newLeft = tab.TranslatePoint(new System.Windows.Point(), TabStripPanel).X;
+            var offset = oldLeft - newLeft;
+            if (Math.Abs(offset) < 0.5) continue;
+            var transform = tab.RenderTransform as System.Windows.Media.TranslateTransform
+                            ?? new System.Windows.Media.TranslateTransform();
+            tab.RenderTransform = transform;
+            transform.BeginAnimation(System.Windows.Media.TranslateTransform.XProperty,
+                new System.Windows.Media.Animation.DoubleAnimation(offset, 0,
+                    TimeSpan.FromMilliseconds(TabReorderAnimationDurationMs))
+                {
+                    EasingFunction = new System.Windows.Media.Animation.CubicEase
+                    {
+                        EasingMode = System.Windows.Media.Animation.EasingMode.EaseOut
+                    }
+                });
+        }
+        UpdateTabStripCornerRadii(UsesBottomTitleLayout());
+    }
+
+    private void ResetTabReorderPreview() => ResetTabReorderPreview(animate: true);
+
+    private void ResetTabReorderPreview(bool animate)
+    {
+        if (_tabReorderPreviewFromIndex == null && _tabReorderPreviewToIndex == null)
+        {
+            if (!animate) ClearTabReorderTransforms();
+            return;
+        }
+        var previousLeft = animate
+            ? TabStripPanel.Children.OfType<Border>()
+                .ToDictionary(tab => tab, tab => tab.TranslatePoint(new System.Windows.Point(), TabStripPanel).X)
+            : null;
+        ClearTabReorderTransforms();
+        _tabReorderPreviewFromIndex = null;
+        _tabReorderPreviewToIndex = null;
+        foreach (var tab in TabStripPanel.Children.OfType<Border>())
+        {
+            if (tab.Tag is int originalIndex) Grid.SetColumn(tab, originalIndex);
+        }
+        TabStripPanel.UpdateLayout();
+        if (!animate)
+        {
+            UpdateTabStripCornerRadii(UsesBottomTitleLayout());
+            return;
+        }
+        foreach (var tab in TabStripPanel.Children.OfType<Border>())
+        {
+            if (previousLeft == null || !previousLeft.TryGetValue(tab, out var oldLeft)) continue;
+            var newLeft = tab.TranslatePoint(new System.Windows.Point(), TabStripPanel).X;
+            var offset = oldLeft - newLeft;
+            if (Math.Abs(offset) < 0.5) continue;
+            var transform = tab.RenderTransform as System.Windows.Media.TranslateTransform
+                            ?? new System.Windows.Media.TranslateTransform();
+            tab.RenderTransform = transform;
+            transform.BeginAnimation(System.Windows.Media.TranslateTransform.XProperty,
+                new System.Windows.Media.Animation.DoubleAnimation(offset, 0,
+                    TimeSpan.FromMilliseconds(TabReorderAnimationDurationMs))
+                {
+                    EasingFunction = new System.Windows.Media.Animation.CubicEase
+                    {
+                        EasingMode = System.Windows.Media.Animation.EasingMode.EaseOut
+                    }
+                });
+        }
+        UpdateTabStripCornerRadii(UsesBottomTitleLayout());
+    }
+
+    private void ClearTabReorderTransforms()
+    {
+        foreach (var tab in TabStripPanel.Children.OfType<Border>())
+        {
+            if (tab.RenderTransform is not System.Windows.Media.TranslateTransform transform) continue;
+            transform.BeginAnimation(System.Windows.Media.TranslateTransform.XProperty, null);
+            transform.X = 0;
+        }
+    }
+
+    internal static List<int> BuildTabReorderPreviewOrder(int count, int fromIndex, int toIndex)
+    {
+        var order = Enumerable.Range(0, Math.Max(0, count)).ToList();
+        if (fromIndex < 0 || fromIndex >= order.Count || toIndex < 0 || toIndex >= order.Count) return order;
+        var moved = order[fromIndex];
+        order.RemoveAt(fromIndex);
+        order.Insert(toIndex, moved);
+        return order;
+    }
+
+    private int GetTabReorderTargetIndex(double localX, int fromIndex)
+    {
+        var tabs = TabStripPanel.Children.OfType<Border>()
+            .Where(tab => tab.Tag is int)
+            .OrderBy(tab => (tab.Tag as int?) ?? 0)
+            .ToArray();
+        var lefts = tabs.Select(tab => tab.TranslatePoint(new System.Windows.Point(), TabStripPanel).X).ToArray();
+        var widths = tabs.Select(tab => Math.Max(1, tab.ActualWidth)).ToArray();
+        return CalculateTabReorderTargetIndex(localX, fromIndex, lefts, widths);
+    }
+
+    internal static int CalculateTabReorderTargetIndex(double localX, int fromIndex,
+        IReadOnlyList<double> tabLefts, IReadOnlyList<double> tabWidths)
+    {
+        var count = Math.Min(tabLefts.Count, tabWidths.Count);
+        if (count < 2 || fromIndex < 0 || fromIndex >= count) return Math.Clamp(fromIndex, 0, Math.Max(0, count - 1));
+        var visibleTabs = Enumerable.Range(0, count)
+            .Where(index => index != fromIndex)
+            .Select(index => (Left: tabLefts[index], Width: Math.Max(1, tabWidths[index])))
+            .OrderBy(tab => tab.Left)
+            .ToArray();
+        for (var insertionIndex = 0; insertionIndex < visibleTabs.Length; insertionIndex++)
+        {
+            if (localX < visibleTabs[insertionIndex].Left + visibleTabs[insertionIndex].Width / 2)
+                return insertionIndex;
+        }
+        return visibleTabs.Length;
+    }
+
+    internal static bool ShouldAllowExternalTabMove(bool shiftHeldAtDragStart) => shiftHeldAtDragStart;
+
+    internal static bool ShouldStartTabOperation(ModifierKeys modifiers) =>
+        (modifiers & ModifierKeys.Shift) != 0;
+
+    internal static bool ShouldConstrainTabDragToHeader(bool externalMoveAllowed) => !externalMoveAllowed;
+
+    private static bool IsExternalTabMoveAllowed(System.Windows.IDataObject data) =>
+        DesktopDragData.GetCachedData(data, TabPreviewContextFormat) is TabDragPreviewContext context
+            ? context.ExternalMoveAllowed
+            : DesktopDragData.GetCachedData(data, TabExternalMoveAllowedFormat) is true;
+
+    internal static bool ShouldCompactTabDragPreview(bool inMergeZone, bool belongsToTargetGroup,
+        bool canMergeIntoTarget) =>
+        belongsToTargetGroup || (inMergeZone && canMergeIntoTarget);
+
     private void UpdateTabStripCornerRadii(bool bottomDocked)
     {
-        var allTabs = TabStripPanel.Children.OfType<Border>().ToArray();
+        var allTabs = TabStripPanel.Children.OfType<Border>().OrderBy(Grid.GetColumn).ToArray();
         foreach (var tab in allTabs) tab.CornerRadius = new CornerRadius();
         var tabs = allTabs.Where(tab => tab.Visibility == Visibility.Visible).ToArray();
         if (tabs.Length == 0) return;
@@ -463,8 +775,50 @@ public partial class FenceControl : System.Windows.Controls.UserControl
         }
     }
 
-    private bool IsTabDetachGestureActive() =>
-        AllowTabDetachWithoutShiftForTesting || (Keyboard.Modifiers & ModifierKeys.Shift) != 0;
+    private Rect GetScreenBoundsForTabDrag()
+    {
+        try
+        {
+            var topLeft = PointToScreen(new System.Windows.Point(0, 0));
+            var bottomRight = PointToScreen(new System.Windows.Point(Math.Max(0, ActualWidth), Math.Max(0, ActualHeight)));
+            return new Rect(topLeft, bottomRight);
+        }
+        catch
+        {
+            return Rect.Empty;
+        }
+    }
+
+    private Rect GetScreenHeaderReorderBoundsForTabDrag()
+    {
+        try
+        {
+            var topLeft = PointToScreen(new System.Windows.Point(0, 0));
+            var bottomRight = PointToScreen(new System.Windows.Point(
+                Math.Max(0, ActualWidth), CollapsedHeight));
+            var bounds = new Rect(topLeft, bottomRight);
+            // A little vertical forgiveness prevents a one-pixel wobble along
+            // the header edge. Keep the horizontal bounds exact: once the pointer
+            // leaves the large title bar, reordering must stop.
+            return new Rect(bounds.Left, bounds.Top - 6, bounds.Width, bounds.Height + 12);
+        }
+        catch
+        {
+            return Rect.Empty;
+        }
+    }
+
+    internal static bool ShouldDetachTabDrop(Rect sourceFenceBounds, System.Drawing.Point dropPoint,
+        double tolerance = 12)
+    {
+        if (sourceFenceBounds.IsEmpty) return true;
+        sourceFenceBounds.Inflate(Math.Max(0, tolerance), Math.Max(0, tolerance));
+        return !sourceFenceBounds.Contains(new System.Windows.Point(dropPoint.X, dropPoint.Y));
+    }
+
+    internal static bool ShouldCollapseDraggedTabSlot(bool externalMoveAllowed,
+        Rect sourceHeaderBounds, System.Windows.Point cursor) =>
+        externalMoveAllowed && (sourceHeaderBounds.IsEmpty || !sourceHeaderBounds.Contains(cursor));
 
     internal void HideTabForActiveDrag(string fenceId)
     {
@@ -472,15 +826,68 @@ public partial class FenceControl : System.Windows.Controls.UserControl
         var hiddenIndex = _tabConfigs.ToList().FindIndex(config =>
             string.Equals(config.Id, fenceId, StringComparison.OrdinalIgnoreCase));
         if (hiddenIndex < 0) return;
+        _activeTabDragHiddenIndex = hiddenIndex;
+        _activeTabDragSlotCollapsed = false;
 
         foreach (UIElement child in TabStripPanel.Children)
         {
-            if (Grid.GetColumn(child) == hiddenIndex) child.Visibility = Visibility.Collapsed;
+            if (child is Border tab && tab.Tag is int originalIndex && originalIndex == hiddenIndex)
+            {
+                // Keep the column as a browser-style insertion slot. Collapsing it
+                // shifts every target while the pointer is moving and makes release
+                // land on the Fence background instead of the intended tab position.
+                tab.Opacity = 0;
+                tab.IsHitTestVisible = false;
+            }
         }
-
-        if (hiddenIndex < TabStripPanel.ColumnDefinitions.Count)
-            TabStripPanel.ColumnDefinitions[hiddenIndex].Width = new GridLength(0);
         UpdateTabStripCornerRadii(UsesBottomTitleLayout());
+    }
+
+    private void SetActiveTabDragSlotCollapsed(bool collapsed)
+    {
+        if (_activeTabDragHiddenIndex is not int hiddenIndex ||
+            _activeTabDragSlotCollapsed == collapsed) return;
+        // Slot collapse/restore is a layout state change, not another reorder.
+        // Reset synchronously so the old horizontal animation cannot flash in the
+        // opposite direction or accumulate into an overshoot.
+        ResetTabReorderPreview(animate: false);
+        var tab = TabStripPanel.Children.OfType<Border>()
+            .FirstOrDefault(candidate => candidate.Tag is int originalIndex && originalIndex == hiddenIndex);
+        if (tab == null) return;
+
+        tab.Visibility = collapsed ? Visibility.Collapsed : Visibility.Visible;
+        tab.Opacity = 0;
+        tab.IsHitTestVisible = false;
+        var allTabs = TabStripPanel.Children.OfType<Border>()
+            .Where(candidate => candidate.Tag is int)
+            .OrderBy(candidate => (int)candidate.Tag)
+            .ToArray();
+        if (collapsed)
+        {
+            var nextColumn = 0;
+            foreach (var remaining in allTabs.Where(candidate => !ReferenceEquals(candidate, tab)))
+                Grid.SetColumn(remaining, nextColumn++);
+            Grid.SetColumn(tab, Math.Max(0, allTabs.Length - 1));
+            for (var column = 0; column < allTabs.Length && column < TabStripPanel.ColumnDefinitions.Count; column++)
+                TabStripPanel.ColumnDefinitions[column].Width = column == allTabs.Length - 1
+                    ? new GridLength(0)
+                    : _tabStripEqualWidths
+                        ? new GridLength(1, GridUnitType.Star)
+                        : GridLength.Auto;
+        }
+        else
+        {
+            foreach (var candidate in allTabs)
+                Grid.SetColumn(candidate, (int)candidate.Tag);
+            for (var column = 0; column < allTabs.Length && column < TabStripPanel.ColumnDefinitions.Count; column++)
+                TabStripPanel.ColumnDefinitions[column].Width = _tabStripEqualWidths
+                    ? new GridLength(1, GridUnitType.Star)
+                    : GridLength.Auto;
+        }
+        _activeTabDragSlotCollapsed = collapsed;
+        TabStripPanel.UpdateLayout();
+        UpdateTabStripCornerRadii(UsesBottomTitleLayout());
+        AppLogger.Log($"Tab drag source slot state changed. Collapsed={collapsed}; HiddenIndex={hiddenIndex}");
     }
 
     private Window CreateTabDragPreview(int tabIndex)
@@ -507,11 +914,37 @@ public partial class FenceControl : System.Windows.Controls.UserControl
         previewFence.SetTabStatus(1, 0);
         previewFence.LoadFolderItems();
 
+        var compactTabPreview = new Border
+        {
+            Height = CollapsedHeight,
+            HorizontalAlignment = System.Windows.HorizontalAlignment.Stretch,
+            VerticalAlignment = VerticalAlignment.Stretch,
+            Background = BrushFromString(previewConfig.HeaderColor, "#F03F7FA8"),
+            BorderBrush = new SolidColorBrush(System.Windows.Media.Color.FromArgb(0xBB, 0xFF, 0xFF, 0xFF)),
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(8),
+            Padding = new Thickness(10, 0, 10, 0),
+            Visibility = Visibility.Collapsed,
+            IsHitTestVisible = false,
+            Child = new TextBlock
+            {
+                Text = sourceConfig.Title,
+                Foreground = System.Windows.Media.Brushes.White,
+                FontWeight = FontWeights.SemiBold,
+                TextTrimming = TextTrimming.CharacterEllipsis,
+                TextAlignment = TextAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Center
+            }
+        };
+        var previewRoot = new Grid { IsHitTestVisible = false };
+        previewRoot.Children.Add(previewFence);
+        previewRoot.Children.Add(compactTabPreview);
+
         var preview = new Window
         {
             Width = previewFence.Width,
             Height = previewFence.Height,
-            Content = previewFence,
+            Content = previewRoot,
             WindowStyle = WindowStyle.None,
             ResizeMode = ResizeMode.NoResize,
             AllowsTransparency = true,
@@ -531,20 +964,44 @@ public partial class FenceControl : System.Windows.Controls.UserControl
         return preview;
     }
 
-    private void PositionTabDragPreview(Window preview)
+    internal static FenceControl? GetTabDragPreviewFenceForTesting(Window preview) =>
+        preview.Content switch
+        {
+            FenceControl fence => fence,
+            Grid root => root.Children.OfType<FenceControl>().FirstOrDefault(),
+            _ => null
+        };
+
+    private void PositionTabDragPreview(Window preview, bool constrainToSourceHeader, Rect sourceFenceBounds)
     {
         var handle = new System.Windows.Interop.WindowInteropHelper(preview).Handle;
         if (handle == IntPtr.Zero) return;
-        var cursor = Forms.Cursor.Position;
         var toDevice = PresentationSource.FromVisual(this)?.CompositionTarget?.TransformToDevice
                        ?? System.Windows.Media.Matrix.Identity;
-        var widthPixels = Math.Max(1, (int)Math.Round(preview.Width * toDevice.M11));
-        var heightPixels = Math.Max(1, (int)Math.Round(preview.Height * toDevice.M22));
+        PositionTabDragPreviewHandle(handle, preview.Width, preview.Height,
+            toDevice.M11, toDevice.M22, constrainToSourceHeader, sourceFenceBounds);
+    }
+
+    private static void PositionTabDragPreviewHandle(IntPtr handle, double width, double height,
+        double scaleX, double scaleY, bool constrainToSourceHeader, Rect sourceFenceBounds)
+    {
+        if (handle == IntPtr.Zero) return;
+        var cursor = Forms.Cursor.Position;
+        var widthPixels = Math.Max(1, (int)Math.Round(width * scaleX));
+        var heightPixels = Math.Max(1, (int)Math.Round(height * scaleY));
         var workArea = Forms.Screen.FromPoint(cursor).WorkingArea;
         var requestedLeft = cursor.X - widthPixels / 2;
-        var requestedTop = cursor.Y - Math.Max(1, (int)Math.Round(17 * toDevice.M22));
-        var left = Math.Clamp(requestedLeft, workArea.Left, Math.Max(workArea.Left, workArea.Right - widthPixels));
-        var top = Math.Clamp(requestedTop, workArea.Top, Math.Max(workArea.Top, workArea.Bottom - heightPixels));
+        var requestedTop = cursor.Y - Math.Max(1, (int)Math.Round(17 * scaleY));
+        var horizontalLeft = constrainToSourceHeader && !sourceFenceBounds.IsEmpty
+            ? (int)Math.Round(sourceFenceBounds.Left)
+            : workArea.Left;
+        var horizontalRight = constrainToSourceHeader && !sourceFenceBounds.IsEmpty
+            ? (int)Math.Round(sourceFenceBounds.Right)
+            : workArea.Right;
+        var left = Math.Clamp(requestedLeft, horizontalLeft, Math.Max(horizontalLeft, horizontalRight - widthPixels));
+        var top = constrainToSourceHeader && !sourceFenceBounds.IsEmpty
+            ? (int)Math.Round(sourceFenceBounds.Top)
+            : Math.Clamp(requestedTop, workArea.Top, Math.Max(workArea.Top, workArea.Bottom - heightPixels));
         SetWindowPos(
             handle,
             HwndTopmost,
@@ -559,32 +1016,89 @@ public partial class FenceControl : System.Windows.Controls.UserControl
     {
         private readonly Window _window;
         private readonly FenceControl _fence;
+        private readonly Border _compactTab;
+        private readonly Action _clearReorderPreview;
+        private readonly Action<bool> _setSourceSlotCollapsed;
         private readonly double _fullWidth;
         private readonly double _fullHeight;
+        private readonly IReadOnlyList<double> _sourceTabLefts;
+        private readonly IReadOnlyList<double> _sourceTabWidths;
         private bool _isCompact;
+        private double _compactWidth;
+        private double _currentWidth;
+        private double _currentHeight;
 
-        public TabDragPreviewContext(Window window, FenceControl fence)
+        public double SourceTabWidth { get; }
+        public bool ExternalMoveAllowed { get; private set; }
+
+        public TabDragPreviewContext(Window window, FenceControl fence, Border compactTab,
+            Action clearReorderPreview, Action<bool> setSourceSlotCollapsed,
+            double sourceTabWidth, bool externalMoveAllowed,
+            IReadOnlyList<double> sourceTabLefts, IReadOnlyList<double> sourceTabWidths)
         {
             _window = window;
             _fence = fence;
+            _compactTab = compactTab;
+            _clearReorderPreview = clearReorderPreview;
+            _setSourceSlotCollapsed = setSourceSlotCollapsed;
+            SourceTabWidth = Math.Max(72, sourceTabWidth);
+            ExternalMoveAllowed = externalMoveAllowed;
+            _sourceTabLefts = sourceTabLefts.ToArray();
+            _sourceTabWidths = sourceTabWidths.ToArray();
             _fullWidth = window.Width;
             _fullHeight = window.Height;
+            _currentWidth = _fullWidth;
+            _currentHeight = _fullHeight;
+        }
+
+        public void SetExternalMoveAllowed(bool allowed)
+        {
+            if (ExternalMoveAllowed == allowed) return;
+            ExternalMoveAllowed = allowed;
+            AppLogger.Log($"Tab drag Shift state changed. ExternalMoveAllowed={allowed}");
+            if (!allowed) SetMergePreview(true, SourceTabWidth);
         }
 
         public void SetMergePreview(bool active, double compactWidth)
         {
-            if (_isCompact == active) return;
+            // Without Shift this is a browser-style reorder only: never turn the
+            // floating tab into a detachable full Fence while it is being sorted.
+            if (!ExternalMoveAllowed) active = true;
+            // Never resize the floating tab to the hovered target or to a fixed
+            // fallback. Its width must match the hidden source slot, otherwise a
+            // middle tab overlaps both neighbours and edge tabs spill outward.
+            var requestedCompactWidth = SourceTabWidth;
+            if (_isCompact == active && (!active || Math.Abs(_compactWidth - requestedCompactWidth) < 0.5)) return;
             _isCompact = active;
-            var targetWidth = active ? Math.Max(96, compactWidth) : _fullWidth;
+            _compactWidth = requestedCompactWidth;
+            var targetWidth = active ? requestedCompactWidth : _fullWidth;
             var targetHeight = active ? CollapsedHeight : _fullHeight;
-            _fence.SetMergeSourcePreview(active, targetWidth);
-            _window.BeginAnimation(Window.WidthProperty, new System.Windows.Media.Animation.DoubleAnimation(
-                _window.ActualWidth > 0 ? _window.ActualWidth : _window.Width, targetWidth, TimeSpan.FromMilliseconds(180))
-            { FillBehavior = System.Windows.Media.Animation.FillBehavior.HoldEnd });
-            _window.BeginAnimation(Window.HeightProperty, new System.Windows.Media.Animation.DoubleAnimation(
-                _window.ActualHeight > 0 ? _window.ActualHeight : _window.Height, targetHeight, TimeSpan.FromMilliseconds(180))
-            { FillBehavior = System.Windows.Media.Animation.FillBehavior.HoldEnd });
+            Volatile.Write(ref _currentWidth, targetWidth);
+            Volatile.Write(ref _currentHeight, targetHeight);
+            _window.BeginAnimation(Window.WidthProperty, null);
+            _window.BeginAnimation(Window.HeightProperty, null);
+            _window.Width = targetWidth;
+            _window.Height = targetHeight;
+            _fence.Visibility = active ? Visibility.Collapsed : Visibility.Visible;
+            _compactTab.Visibility = active ? Visibility.Visible : Visibility.Collapsed;
+            if (active)
+            {
+                _compactTab.BeginAnimation(OpacityProperty,
+                    new System.Windows.Media.Animation.DoubleAnimation(0.55, 0.96, TimeSpan.FromMilliseconds(90)));
+            }
+            else
+            {
+                _compactTab.BeginAnimation(OpacityProperty, null);
+            }
+            _window.UpdateLayout();
         }
+
+        public void ClearReorderPreview() => _clearReorderPreview();
+        public void SetSourceSlotCollapsed(bool collapsed) => _setSourceSlotCollapsed(collapsed);
+        public int GetReorderTargetIndex(double localX, int fromIndex) =>
+            CalculateTabReorderTargetIndex(localX, fromIndex, _sourceTabLefts, _sourceTabWidths);
+        public (double Width, double Height) GetCurrentSize() =>
+            (Volatile.Read(ref _currentWidth), Volatile.Read(ref _currentHeight));
     }
 
     private static readonly IntPtr HwndTopmost = new(-1);
@@ -595,6 +1109,12 @@ public partial class FenceControl : System.Windows.Controls.UserControl
     private const int WsExTransparent = 0x00000020;
     private const int WsExToolWindow = 0x00000080;
     private const int WsExNoActivate = 0x08000000;
+    private const int VkShift = 0x10;
+
+    private static bool IsShiftKeyDown() => (GetAsyncKeyState(VkShift) & 0x8000) != 0;
+
+    [DllImport("user32.dll")]
+    private static extern short GetAsyncKeyState(int virtualKey);
 
     [DllImport("user32.dll", SetLastError = true)]
     private static extern bool SetWindowPos(
@@ -2382,7 +2902,7 @@ public partial class FenceControl : System.Windows.Controls.UserControl
         else
             ApplyFolderChange();
         LoadFolderItems();
-        Changed?.Invoke(this, EventArgs.Empty);
+        ItemsChanged?.Invoke(this, EventArgs.Empty);
     }
 
     private void RefreshMenuItem_Click(object sender, RoutedEventArgs e)
@@ -2680,6 +3200,7 @@ public partial class FenceControl : System.Windows.Controls.UserControl
         if (ShouldRouteDropToFolderIcon(e)) return;
         if (DesktopDragData.GetCachedData(e.Data, TabFenceIdFormat) is string sourceFenceId)
         {
+            if (IsVisualDescendantOf(e.OriginalSource as DependencyObject, TabStripPanel)) return;
             (Window.GetWindow(this) as MainWindow)?.HideDragHint();
             UpdateTabMergeDragState(e, sourceFenceId);
             return;
@@ -2690,6 +3211,8 @@ public partial class FenceControl : System.Windows.Controls.UserControl
     private void FenceControl_PreviewDrop(object sender, System.Windows.DragEventArgs e)
     {
         if (ShouldRouteDropToFolderIcon(e)) return;
+        if (DesktopDragData.GetCachedData(e.Data, TabFenceIdFormat) is not null &&
+            IsVisualDescendantOf(e.OriginalSource as DependencyObject, TabStripPanel)) return;
         FenceControl_Drop(sender, e);
     }
 
@@ -2729,7 +3252,10 @@ public partial class FenceControl : System.Windows.Controls.UserControl
         if (IsPointerInsideFence(Forms.Cursor.Position) &&
             (host == null || host.IsTopmostFenceAtScreenPoint(this, Forms.Cursor.Position))) return;
         if (DesktopDragData.GetCachedData(e.Data, TabPreviewContextFormat) is TabDragPreviewContext previewContext)
+        {
+            previewContext.ClearReorderPreview();
             previewContext.SetMergePreview(false, 0);
+        }
         ClearDragHighlight();
         if (host != null && !host.IsMiniFencesWindowAtScreenPoint(Forms.Cursor.Position))
         {
@@ -2762,25 +3288,36 @@ public partial class FenceControl : System.Windows.Controls.UserControl
             ClearDragHighlight();
             return;
         }
-        if (DesktopDragData.GetCachedData(e.Data, TabPreviewContextFormat) is TabDragPreviewContext previewContext)
-            previewContext.SetMergePreview(false, 0);
         host?.HideDragHint();
         ClearDragHighlight();
         if (DesktopDragData.GetCachedData(e.Data, TabFenceIdFormat) is string sourceFenceId)
         {
-            var inMergeZone = IsTabMergeDropPoint(e.GetPosition(this));
-            if (CanAcceptTabMerge(sourceFenceId) && inMergeZone)
+            var inMergeZone = IsTabMergeTargetPoint(e.GetPosition(this));
+            if (IsExternalTabMoveAllowed(e.Data) && CanAcceptTabMerge(sourceFenceId) && inMergeZone)
             {
                 AppLogger.Log($"Tab title-zone drop accepted. Source={sourceFenceId}; Target={Config.Title}");
-                TabMergeRequested?.Invoke(sourceFenceId);
+                TabMergeRequested?.Invoke(sourceFenceId,
+                    GetTabInsertionIndex(e.GetPosition(TabStripPanel).X));
                 e.Effects = System.Windows.DragDropEffects.Move;
             }
-            else if (BelongsToThisTabGroup(sourceFenceId) && inMergeZone)
+            else if (BelongsToThisTabGroup(sourceFenceId))
             {
                 var sourceIndex = _tabConfigs?.ToList().FindIndex(config =>
                     string.Equals(config.Id, sourceFenceId, StringComparison.OrdinalIgnoreCase)) ?? -1;
-                if (sourceIndex >= 0) TabSelectedRequested?.Invoke(sourceIndex);
-                AppLogger.Log($"Tab returned to its original group. Source={sourceFenceId}; Target={Config.Title}");
+                var dragSourceIndex = DesktopDragData.GetCachedData(e.Data, TabIndexFormat) is int dataIndex
+                    ? dataIndex
+                    : sourceIndex;
+                if (_tabReorderPreviewFromIndex == dragSourceIndex &&
+                    _tabReorderPreviewToIndex is int previewTarget && previewTarget != dragSourceIndex)
+                {
+                    AppLogger.Log($"Tab reorder accepted from preview slot. Source={sourceFenceId}; From={dragSourceIndex}; To={previewTarget}");
+                    TabReorderRequested?.Invoke(dragSourceIndex, previewTarget);
+                }
+                else
+                {
+                    if (sourceIndex >= 0) TabSelectedRequested?.Invoke(sourceIndex);
+                    AppLogger.Log($"Tab returned anywhere inside its original Fence. Source={sourceFenceId}; Target={Config.Title}");
+                }
                 e.Effects = System.Windows.DragDropEffects.Move;
             }
             else
@@ -3014,24 +3551,53 @@ public partial class FenceControl : System.Windows.Controls.UserControl
 
     private void UpdateTabMergeDragState(System.Windows.DragEventArgs e, string sourceFenceId)
     {
-        var canMergeOrReturn = IsTabMergeDropPoint(e.GetPosition(this)) &&
-                               (CanAcceptTabMerge(sourceFenceId) || BelongsToThisTabGroup(sourceFenceId));
+        var inMergeZone = IsTabMergeTargetPoint(e.GetPosition(this));
+        var belongsToThisGroup = BelongsToThisTabGroup(sourceFenceId);
+        var canMerge = IsExternalTabMoveAllowed(e.Data) && inMergeZone && CanAcceptTabMerge(sourceFenceId);
+        var canMergeOrReturn = canMerge || belongsToThisGroup;
         e.Effects = canMergeOrReturn ? System.Windows.DragDropEffects.Move : System.Windows.DragDropEffects.None;
         e.Handled = true;
         if (DesktopDragData.GetCachedData(e.Data, TabPreviewContextFormat) is TabDragPreviewContext previewContext)
-            previewContext.SetMergePreview(canMergeOrReturn, ActualWidth / 3);
-        if (canMergeOrReturn)
         {
-            SetDragHighlight();
+            var tabStripPoint = e.GetPosition(TabStripPanel);
+            var reorderPointAccepted = previewContext.ExternalMoveAllowed
+                ? GetScreenHeaderReorderBoundsForTabDrag().Contains(
+                    new System.Windows.Point(Forms.Cursor.Position.X, Forms.Cursor.Position.Y))
+                : IsPointWithinTabSlotColumns(tabStripPoint);
+            if (belongsToThisGroup && reorderPointAccepted &&
+                DesktopDragData.GetCachedData(e.Data, TabIndexFormat) is int fromIndex)
+                PreviewTabReorder(fromIndex,
+                    previewContext.GetReorderTargetIndex(tabStripPoint.X, fromIndex));
+            else if (!reorderPointAccepted)
+                previewContext.ClearReorderPreview();
+            previewContext.SetMergePreview(
+                ShouldCompactTabDragPreview(inMergeZone, belongsToThisGroup, canMerge),
+                belongsToThisGroup ? 96 : ActualWidth / 3);
         }
-        else
-        {
-            ClearDragHighlight();
-        }
+        // The compact dragged tab is the merge affordance. Extra target borders
+        // made the Fence flash a large blue frame and did not match browser tabs.
+        ClearDragHighlight();
     }
 
     private bool CanAcceptTabMerge(string sourceFenceId) =>
         CanAcceptTabMerge(sourceFenceId, Config.Id, _tabConfigs);
+
+    private bool IsPointOverTabSlots(System.Windows.Point point)
+    {
+        if (TabStripPanel.Visibility != Visibility.Visible || point.Y < 0 || point.Y > TabStripPanel.ActualHeight)
+            return false;
+        return IsPointWithinTabSlotColumns(point);
+    }
+
+    private bool IsPointWithinTabSlotColumns(System.Windows.Point point)
+    {
+        if (TabStripPanel.Visibility != Visibility.Visible) return false;
+        var tabCount = Math.Min(_tabConfigs?.Count ?? 0, TabStripPanel.ColumnDefinitions.Count);
+        var tabSlotsWidth = 0d;
+        for (var index = 0; index < tabCount; index++)
+            tabSlotsWidth += TabStripPanel.ColumnDefinitions[index].ActualWidth;
+        return point.X >= 0 && point.X <= tabSlotsWidth;
+    }
 
     private bool BelongsToThisTabGroup(string sourceFenceId) =>
         _tabConfigs?.Any(config => string.Equals(config.Id, sourceFenceId, StringComparison.OrdinalIgnoreCase)) == true;
@@ -3043,6 +3609,51 @@ public partial class FenceControl : System.Windows.Controls.UserControl
 
     private bool IsTabMergeDropPoint(System.Windows.Point point) =>
         IsTabMergeDropPoint(point, ActualWidth > 0 ? ActualWidth : Width);
+
+    private bool IsTabMergeTargetPoint(System.Windows.Point point)
+    {
+        var width = ActualWidth > 0 ? ActualWidth : Width;
+        return width > 0 && point.X >= 0 && point.X <= width &&
+               point.Y >= -10 && point.Y <= CollapsedHeight + 10;
+    }
+
+    internal bool IsHeaderMergePoint(System.Windows.Point workspacePoint)
+    {
+        var left = Canvas.GetLeft(this);
+        var top = Canvas.GetTop(this);
+        if (double.IsNaN(left)) left = Config.Left;
+        if (double.IsNaN(top)) top = Config.Top;
+        var width = ActualWidth > 0 ? ActualWidth : Width;
+        return new Rect(left, top - 10, width, CollapsedHeight + 20).Contains(workspacePoint);
+    }
+
+    internal int GetTabInsertionIndexForHeaderPoint(System.Windows.Point workspacePoint)
+    {
+        var left = Canvas.GetLeft(this);
+        if (double.IsNaN(left)) left = Config.Left;
+        return GetTabInsertionIndex(workspacePoint.X - left);
+    }
+
+    private int GetTabInsertionIndex(double localX)
+    {
+        var tabCount = _tabConfigs?.Count ?? 0;
+        if (tabCount == 0)
+            return localX < (ActualWidth > 0 ? ActualWidth : Width) / 2 ? 0 : 1;
+
+        var x = 0d;
+        for (var index = 0; index < tabCount; index++)
+        {
+            var width = index < TabStripPanel.ColumnDefinitions.Count
+                ? TabStripPanel.ColumnDefinitions[index].ActualWidth
+                : 0;
+            if (width <= 0)
+                width = TabStripPanel.Children.OfType<Border>()
+                    .FirstOrDefault(tab => tab.Tag is int originalIndex && originalIndex == index)?.ActualWidth ?? 72;
+            if (localX < x + width / 2) return index;
+            x += width;
+        }
+        return tabCount;
+    }
 
     internal static bool IsTabMergeDropPoint(System.Windows.Point point, double fenceWidth) =>
         fenceWidth > 0 && point.Y >= 0 && point.Y <= CollapsedHeight &&
@@ -3332,7 +3943,19 @@ public partial class FenceControl : System.Windows.Controls.UserControl
 
     internal void SetMergePreview(bool active)
     {
-        MergePreview.Opacity = 0;
+        MergePreview.Opacity = active ? 1 : 0;
+        if (!active)
+        {
+            MergePreviewPulse.BeginAnimation(OpacityProperty, null);
+            return;
+        }
+        MergePreviewPulse.BeginAnimation(OpacityProperty,
+            new System.Windows.Media.Animation.DoubleAnimation(0.35, 1,
+                TimeSpan.FromMilliseconds(420))
+            {
+                AutoReverse = true,
+                RepeatBehavior = System.Windows.Media.Animation.RepeatBehavior.Forever
+            });
     }
 
     internal void SetMergeSourcePreview(bool active, double compactWidth = 0)
@@ -3532,6 +4155,29 @@ public partial class FenceControl : System.Windows.Controls.UserControl
         }
 
         return null;
+    }
+
+    internal System.Windows.Point GetHeaderDragMergePoint()
+    {
+        var left = Canvas.GetLeft(this);
+        var top = Canvas.GetTop(this);
+        if (double.IsNaN(left)) left = Config.Left;
+        if (double.IsNaN(top)) top = Config.Top;
+        var headerCenterX = _isMergeCompactPreview
+            ? _mergePreviewLeft + _mergePreviewWidth / 2
+            : (ActualWidth > 0 ? ActualWidth : Width) / 2;
+        return new System.Windows.Point(left + headerCenterX, top + CollapsedHeight / 2);
+    }
+
+    internal static bool IsVisualDescendantOf(DependencyObject? source, DependencyObject ancestor)
+    {
+        while (source != null)
+        {
+            if (ReferenceEquals(source, ancestor)) return true;
+            source = VisualTreeHelper.GetParent(source);
+        }
+
+        return false;
     }
 
     private static T? FindVisualChild<T>(DependencyObject parent) where T : DependencyObject

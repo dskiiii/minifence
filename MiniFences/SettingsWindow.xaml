@@ -15,6 +15,7 @@
         ShowInTaskbar="True">
     <Window.Resources>
         <Style TargetType="Button">
+            <Setter Property="FocusVisualStyle" Value="{x:Null}" />
             <Setter Property="MinHeight" Value="36" />
             <Setter Property="Padding" Value="15,6" />
             <Setter Property="Margin" Value="0,0,8,8" />
@@ -35,7 +36,13 @@
                                 <Setter TargetName="ButtonBorder" Property="BorderBrush" Value="#FFAAB8CC" />
                             </Trigger>
                             <Trigger Property="IsPressed" Value="True"><Setter TargetName="ButtonBorder" Property="Background" Value="#FFE7EDF7" /></Trigger>
-                            <Trigger Property="IsEnabled" Value="False"><Setter TargetName="ButtonBorder" Property="Opacity" Value="0.46" /></Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter TargetName="ButtonBorder" Property="Opacity" Value="0.58" />
+                                <Setter TargetName="ButtonBorder" Property="Background" Value="#FFF0F2F5" />
+                                <Setter TargetName="ButtonBorder" Property="BorderBrush" Value="#FFD9DEE6" />
+                                <Setter Property="Foreground" Value="#FF8C96A5" />
+                                <Setter Property="Cursor" Value="Arrow" />
+                            </Trigger>
                         </ControlTemplate.Triggers>
                     </ControlTemplate>
                 </Setter.Value>
@@ -43,6 +50,12 @@
         </Style>
         <Style TargetType="TextBlock">
             <Setter Property="TextWrapping" Value="Wrap" />
+        </Style>
+        <Style TargetType="CheckBox">
+            <Setter Property="FocusVisualStyle" Value="{x:Null}" />
+        </Style>
+        <Style TargetType="ScrollViewer">
+            <Setter Property="FocusVisualStyle" Value="{x:Null}" />
         </Style>
         <Style x:Key="SectionTitle" TargetType="TextBlock">
             <Setter Property="FontSize" Value="28" />
@@ -96,6 +109,7 @@
             </ControlTemplate></Setter.Value></Setter>
         </Style>
         <Style TargetType="ComboBox">
+            <Setter Property="FocusVisualStyle" Value="{x:Null}" />
             <Setter Property="MinHeight" Value="36" />
             <Setter Property="VerticalContentAlignment" Value="Center" />
             <Setter Property="Padding" Value="10,0" />
@@ -237,7 +251,7 @@
                                 <TextBlock x:Name="UnassignedItemsTitle" Style="{StaticResource GroupTitle}" Margin="0" Text="Unassigned desktop icons" />
                                 <Border HorizontalAlignment="Right" VerticalAlignment="Top" Background="#FFE8F0FF" CornerRadius="10" Padding="8,3"><TextBlock Text="{Binding ElementName=UnassignedItemsList, Path=Items.Count}" Foreground="#FF2357B6" FontSize="12" FontWeight="SemiBold" /></Border>
                             </Grid>
-                            <ListBox x:Name="UnassignedItemsList" SelectionMode="Extended" BorderThickness="0" Background="Transparent" ScrollViewer.HorizontalScrollBarVisibility="Disabled" ItemContainerStyle="{StaticResource IconGridItem}">
+                            <ListBox x:Name="UnassignedItemsList" SelectionMode="Extended" SelectionChanged="FenceContentSelectionChanged" BorderThickness="0" Background="Transparent" ScrollViewer.HorizontalScrollBarVisibility="Disabled" ItemContainerStyle="{StaticResource IconGridItem}">
                                 <ListBox.ItemsPanel><ItemsPanelTemplate><WrapPanel /></ItemsPanelTemplate></ListBox.ItemsPanel>
                                 <ListBox.ItemTemplate><DataTemplate><StackPanel Width="72" Height="76" VerticalAlignment="Center"><Image Source="{Binding Icon}" Width="38" Height="38" Stretch="Uniform" /><TextBlock Text="{Binding Name}" TextAlignment="Center" TextTrimming="CharacterEllipsis" FontSize="11" Margin="0,7,0,0" ToolTip="{Binding Name}" /></StackPanel></DataTemplate></ListBox.ItemTemplate>
                             </ListBox>
@@ -257,7 +271,7 @@
                                 <TextBlock x:Name="FenceItemsTitle" Style="{StaticResource GroupTitle}" Margin="0" Text="Fence contents" />
                                 <Border HorizontalAlignment="Right" VerticalAlignment="Top" Background="#FFE8F0FF" CornerRadius="10" Padding="8,3"><TextBlock Text="{Binding ElementName=FenceItemsList, Path=Items.Count}" Foreground="#FF2357B6" FontSize="12" FontWeight="SemiBold" /></Border>
                             </Grid>
-                            <ListBox x:Name="FenceItemsList" SelectionMode="Extended" BorderThickness="0" Background="Transparent" ScrollViewer.HorizontalScrollBarVisibility="Disabled" ItemContainerStyle="{StaticResource IconGridItem}">
+                            <ListBox x:Name="FenceItemsList" SelectionMode="Extended" SelectionChanged="FenceContentSelectionChanged" BorderThickness="0" Background="Transparent" ScrollViewer.HorizontalScrollBarVisibility="Disabled" ItemContainerStyle="{StaticResource IconGridItem}">
                                 <ListBox.ItemsPanel><ItemsPanelTemplate><WrapPanel /></ItemsPanelTemplate></ListBox.ItemsPanel>
                                 <ListBox.ItemTemplate><DataTemplate><StackPanel Width="72" Height="76" VerticalAlignment="Center"><Image Source="{Binding Icon}" Width="38" Height="38" Stretch="Uniform" /><TextBlock Text="{Binding Name}" TextAlignment="Center" TextTrimming="CharacterEllipsis" FontSize="11" Margin="0,7,0,0" ToolTip="{Binding Name}" /></StackPanel></DataTemplate></ListBox.ItemTemplate>
                             </ListBox>
@@ -443,14 +457,14 @@
                         <Border Width="420" Height="92" Background="#DD20242A" BorderBrush="#99FFFFFF" BorderThickness="1" CornerRadius="7">
                             <Grid><Grid.RowDefinitions><RowDefinition Height="34"/><RowDefinition Height="*"/></Grid.RowDefinitions>
                                 <Grid x:Name="TabPreviewPanel" Background="#CC3F7FA8" />
-                                <TextBlock x:Name="TabPreviewContent" Grid.Row="1" Text="Desktop" Foreground="White" FontSize="18" Margin="16,10" />
+                                <TextBlock x:Name="TabPreviewContent" Grid.Row="1" Text="📄    📁    🖼" FontSize="28" Margin="18,8" VerticalAlignment="Center" />
                             </Grid>
                         </Border>
                     </Border>
                 </StackPanel>
             </ScrollViewer>
 
-            <ScrollViewer x:Name="RollupPanel" Visibility="Collapsed" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+            <ScrollViewer x:Name="RollupPanel" Visibility="Collapsed" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" FocusVisualStyle="{x:Null}">
                 <StackPanel>
                     <TextBlock x:Name="RollupSettingsTitle" Style="{StaticResource SectionTitle}" Text="Roll-up" />
                     <TextBlock x:Name="RollupDescription" Style="{StaticResource SectionDescription}" Text="Control Fence roll-up and expansion behavior." />
@@ -461,17 +475,22 @@
                     <CheckBox x:Name="BottomDockTitleCheckBox" Content="Keep the title bar at the bottom when docked there" Click="RollupSettings_Changed" Margin="22,0,0,10" />
                     <CheckBox x:Name="TopDockTitleAtBottomOnExpandCheckBox" Content="Move the title bar to the bottom when a top-docked Fence expands" Click="RollupSettings_Changed" Margin="22,0,0,10" />
                     <CheckBox x:Name="ClickTitleExpandCheckBox" Content="Click the title to expand" Click="RollupSettings_Changed" Margin="0,0,0,10" />
-                    <CheckBox x:Name="HoverTitleExpandCheckBox" Content="Hover over the title to expand" Click="RollupSettings_Changed" Margin="0,0,0,26" />
+                    <CheckBox x:Name="HoverTitleExpandCheckBox" Content="Hover over the title to expand" Click="RollupSettings_Changed" Margin="0,0,0,18" />
                     <TextBlock x:Name="RollupPreviewTitle" Style="{StaticResource GroupTitle}" Text="Interactive preview" />
-                    <Border x:Name="RollupPreviewArea" Width="520" Height="210" HorizontalAlignment="Left" Background="#FF6D7B89" CornerRadius="7" Padding="24">
-                        <Border x:Name="RollupPreviewFence" Width="390" HorizontalAlignment="Center" VerticalAlignment="Bottom" Background="#DD20242A" BorderBrush="#99FFFFFF" BorderThickness="1" CornerRadius="7"
-                                MouseLeftButtonDown="RollupPreviewFence_MouseLeftButtonDown" MouseEnter="RollupPreviewFence_MouseEnter" MouseLeave="RollupPreviewFence_MouseLeave">
+                    <Border x:Name="RollupPreviewArea" Width="520" Height="210" HorizontalAlignment="Left" Background="#FF6D7B89" CornerRadius="7" ClipToBounds="True">
+                        <Canvas x:Name="RollupPreviewCanvas">
+                        <Border x:Name="RollupPreviewFence" Width="390" Canvas.Left="65" Canvas.Top="47" Background="#DD20242A" BorderBrush="#99FFFFFF" BorderThickness="1" CornerRadius="7" Cursor="Arrow"
+                                MouseLeftButtonDown="RollupPreviewFence_MouseLeftButtonDown" MouseLeftButtonUp="RollupPreviewFence_MouseLeftButtonUp"
+                                MouseMove="RollupPreviewFence_MouseMove" LostMouseCapture="RollupPreviewFence_LostMouseCapture"
+                                MouseEnter="RollupPreviewFence_MouseEnter" MouseLeave="RollupPreviewFence_MouseLeave">
                             <Grid x:Name="RollupPreviewGrid"><Grid.RowDefinitions><RowDefinition x:Name="RollupPreviewFirstRow" Height="34"/><RowDefinition x:Name="RollupPreviewContentRow" Height="82"/></Grid.RowDefinitions>
                                 <Border x:Name="RollupPreviewHeaderBorder" Background="#CC3F7FA8" CornerRadius="7,7,0,0"><TextBlock x:Name="RollupPreviewHeader" Text="Fence — click or hover to preview" Foreground="White" Margin="10,0" VerticalAlignment="Center" FontWeight="SemiBold"/></Border>
                                 <StackPanel x:Name="RollupPreviewContent" Grid.Row="1" Orientation="Horizontal" Margin="18,16"><TextBlock Text="📄" FontSize="30"/><TextBlock Text="📁" FontSize="30" Margin="16,0,0,0"/><TextBlock Text="🖼" FontSize="30" Margin="16,0,0,0"/></StackPanel>
                             </Grid>
                         </Border>
+                        </Canvas>
                     </Border>
+                    <TextBlock x:Name="RollupPreviewHint" Width="520" HorizontalAlignment="Left" Margin="0,8,0,0" Foreground="#FF66717E" Text="Use the enabled gestures on the title bar. Hover expansion is temporary." />
                 </StackPanel>
             </ScrollViewer>
 
@@ -609,7 +628,7 @@
                 </Grid.RowDefinitions>
                 <StackPanel>
                     <TextBlock x:Name="HistoryTitle" Style="{StaticResource SectionTitle}" Text="操作历史" />
-                    <TextBlock x:Name="HistoryDescription" Style="{StaticResource SectionDescription}" Text="查看最近 30 天的操作并安全撤销上一步。" />
+                    <TextBlock x:Name="HistoryDescription" Style="{StaticResource SectionDescription}" Text="查看最近 30 天的操作。选择记录只用于打开相关位置；撤销始终作用于最近一步。" />
                 </StackPanel>
                 <ListBox x:Name="HistoryList" Grid.Row="1" Margin="0,8,0,16"
                          SelectionChanged="HistoryList_SelectionChanged"
@@ -632,7 +651,7 @@
                     </ListBox.ItemTemplate>
                 </ListBox>
                 <WrapPanel Grid.Row="2">
-                    <Button x:Name="UndoSelectedHistoryButton" Content="撤销选中操作" Click="UndoSelectedHistoryButton_Click" />
+                    <Button x:Name="UndoLastHistoryButton" Content="撤销上一步" Click="UndoLastHistoryButton_Click" />
                     <Button x:Name="OpenRelatedHistoryButton" Content="打开相关位置" Click="OpenRelatedHistoryButton_Click" />
                     <Button x:Name="OpenRecycleBinButton" Content="打开回收站" Click="OpenRecycleBinButton_Click" />
                     <Button x:Name="ClearHistoryButton" Content="清空历史" Click="ClearHistoryButton_Click" />

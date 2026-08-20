@@ -32,9 +32,11 @@
             <MenuItem x:Name="RenameFenceMenuItem" Header="Rename Fence" Click="RenameFenceMenuItem_Click" />
             <MenuItem x:Name="ChooseFolderMenuItem" Header="Choose Folder..." Click="ChooseFolderMenuItem_Click" />
             <MenuItem x:Name="OpenBoundFolderMenuItem" Header="Open Bound Folder" Click="OpenBoundFolderMenuItem_Click" />
-            <MenuItem x:Name="MoveToPreviousPageMenuItem" Header="Move to Previous Page" Click="MoveToPreviousPageMenuItem_Click" />
-            <MenuItem x:Name="MoveToNextPageMenuItem" Header="Move to Next Page" Click="MoveToNextPageMenuItem_Click" />
-            <MenuItem x:Name="MoveToNewPageMenuItem" Header="Move to New Page" Click="MoveToNewPageMenuItem_Click" />
+            <MenuItem x:Name="MovePageMenuItem" Header="Move to Page">
+                <MenuItem x:Name="MoveToPreviousPageMenuItem" Header="Previous Page" Click="MoveToPreviousPageMenuItem_Click" />
+                <MenuItem x:Name="MoveToNextPageMenuItem" Header="Next Page" Click="MoveToNextPageMenuItem_Click" />
+                <MenuItem x:Name="MoveToNewPageMenuItem" Header="New Page" Click="MoveToNewPageMenuItem_Click" />
+            </MenuItem>
             <MenuItem x:Name="SortMenuItem" Header="Sort by">
                 <MenuItem x:Name="SortNoneMenuItem" Tag="None" Header="None" IsCheckable="True" Click="SortMenuItem_Click" />
                 <MenuItem x:Name="SortNameMenuItem" Tag="Name" Header="Name" IsCheckable="True" Click="SortMenuItem_Click" />

@@ -160,11 +160,20 @@ public sealed class FolderItemService
     public IReadOnlyList<FolderItem> LoadAssignedItems(IEnumerable<string> paths)
     {
         return paths
-            .Where(path => !string.IsNullOrWhiteSpace(path) && (File.Exists(path) || Directory.Exists(path)))
+            .Where(path => !string.IsNullOrWhiteSpace(path) &&
+                           (IsShellNamespacePath(path) || File.Exists(path) || Directory.Exists(path)))
             .Distinct(StringComparer.OrdinalIgnoreCase)
-            .Where(ShouldShowItem)
-            .Select(CreateItem)
+            .Where(path => IsShellNamespacePath(path) || ShouldShowItem(path))
+            .Select(CreateAssignedItem)
             .ToList();
+    }
+
+    private static FolderItem CreateAssignedItem(string path)
+    {
+        if (!IsShellNamespacePath(path)) return CreateItem(path);
+        var descriptor = DesktopShellItems.FirstOrDefault(candidate =>
+            string.Equals(path, $"shell:::{candidate.Clsid}", StringComparison.OrdinalIgnoreCase));
+        return CreateShellNamespaceItem(path, descriptor?.FallbackName ?? "Desktop item");
     }
 
     public static IReadOnlyList<string> CollapseDesktopEntries(IEnumerable<string> paths)

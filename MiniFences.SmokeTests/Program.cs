@@ -294,6 +294,8 @@ static void TestSystemDesktopShellItems()
 
     var requests = new List<ProcessStartInfo>();
     var service = new FolderItemService(startInfo => requests.Add(startInfo));
+    Assert(service.LoadAssignedItems([thisPc]).Single().FullPath == thisPc,
+        "System desktop icons assigned to a Fence must survive content reloads.");
     Assert(service.TryOpen(new FolderItem { Name = "This PC", FullPath = thisPc }, out var error),
         $"System desktop icon should open through Explorer: {error}");
     Assert(requests.Single().FileName == "explorer.exe" &&
@@ -744,14 +746,33 @@ static void TestSettingsNavigation()
            !MainWindow.IsMiniFencesEnabledState(true, true) &&
            !MainWindow.IsMiniFencesEnabledState(false, false),
         "MiniFences is open only when Fences are visible and desktop-icon integration is enabled.");
-    Assert(SettingsWindow.GetBottomRollupOptionAvailability(true, false, true, true) ==
+    Assert(SettingsWindow.GetBottomRollupOptionAvailability(true, false, true) ==
            (false, false, false),
         "Bottom roll-up options must all be disabled when automatic edge roll-up is off.");
-    Assert(SettingsWindow.GetBottomRollupOptionAvailability(true, true, false, true) ==
-           (true, true, true) &&
-           SettingsWindow.GetBottomRollupOptionAvailability(true, true, true, false) ==
+    Assert(SettingsWindow.GetBottomRollupOptionAvailability(true, true, false) ==
+           (true, false, true) &&
+           SettingsWindow.GetBottomRollupOptionAvailability(true, true, true) ==
            (true, true, true),
-        "All three bottom-edge options must remain parallel whenever automatic edge roll-up is enabled.");
+        "Bottom-title placement must only be available when bottom-edge roll-up is allowed.");
+    Assert(SettingsWindow.GetTabOptionAvailability(false, false) == (false, false, false) &&
+           SettingsWindow.GetTabOptionAvailability(true, true) == (true, true, true),
+        "Tab preview controls must only expose options that affect the selected tab mode.");
+    Assert(SettingsWindow.ApplyRollupPreviewDoubleClick(true, true) == (true, false) &&
+           SettingsWindow.ApplyRollupPreviewDoubleClick(true, false) == (false, false),
+        "Double-clicking a hover-expanded preview must collapse it without losing its rolled-up base state.");
+    Assert(SettingsWindow.GetRollupPreviewDock(0, 210, 116) == "Top" &&
+           SettingsWindow.GetRollupPreviewDock(94, 210, 116) == "Bottom" &&
+           SettingsWindow.GetRollupPreviewDock(47, 210, 116) == "Standard",
+        "Dragging the roll-up preview must distinguish the top edge, bottom edge, and free-standing area.");
+    Assert(SettingsWindow.GetRollupPreviewTop("Top", 210, 34) == 0 &&
+           SettingsWindow.GetRollupPreviewTop("Bottom", 210, 34) == 176 &&
+           SettingsWindow.GetRollupPreviewTop("Standard", 210, 116) == 47,
+        "The roll-up preview must snap to either screen edge and otherwise remain centered.");
+    Assert(SettingsWindow.ShouldRollupPreviewAtDock(true, true, false, "Top") &&
+           !SettingsWindow.ShouldRollupPreviewAtDock(true, true, false, "Bottom") &&
+           SettingsWindow.ShouldRollupPreviewAtDock(true, true, true, "Bottom") &&
+           !SettingsWindow.ShouldRollupPreviewAtDock(true, false, true, "Top"),
+        "The draggable preview must follow the real top- and bottom-edge roll-up settings.");
 }
 
 static void TestFenceItemMultiSelectionPresentation()
@@ -764,6 +785,9 @@ static void TestFenceItemMultiSelectionPresentation()
         "List sizes must use KB below one MB, MB below one GB, GB at and above one GB, and a dash for folders.");
     Assert(!MainWindow.ShouldCloseWpfContextMenuFromLowLevelMouseHook(),
         "The low-level desktop hook must not close a WPF context menu before a submenu Click event is delivered.");
+    Assert(!MainWindow.ShouldClearKeyboardFocusForGlobalClick(true) &&
+           MainWindow.ShouldClearKeyboardFocusForGlobalClick(false),
+        "The desktop mouse hook must never clear keyboard focus for Settings, dialogs, ComboBox popups, or other MiniFences windows.");
     Assert(FenceControl.ShouldShowExpandedSelectionLabel(1) &&
            !FenceControl.ShouldShowExpandedSelectionLabel(0) &&
            !FenceControl.ShouldShowExpandedSelectionLabel(2),
@@ -971,7 +995,7 @@ static void TestTabDropAcceptance()
     Assert(!FenceControl.CanAcceptTabMerge("source", "source", null),
         "A tab dropped on its own standalone Fence must detach instead of being falsely accepted.");
     Assert(!FenceControl.CanAcceptTabMerge("source", "target", [ownTab]),
-        "A tab dropped over its current tab group body must detach instead of snapping back.");
+        "A tab already in the target group must not be treated as a new merge.");
     Assert(FenceControl.CanAcceptTabMerge("source", "target", [new FenceConfig { Id = "other" }]),
         "A tab dropped over a different Fence must be eligible for merging.");
     Assert(FenceControl.IsTabMergeDropPoint(new System.Windows.Point(150, 17), 450),
@@ -980,6 +1004,43 @@ static void TestTabDropAcceptance()
         "The target Fence content area must detach the tab instead of merging it.");
     Assert(!FenceControl.IsTabMergeDropPoint(new System.Windows.Point(30, 17), 450),
         "The sides of the target title bar must not count as the merge zone.");
+    var sourceFenceBounds = new System.Windows.Rect(100, 100, 450, 320);
+    Assert(!FenceControl.ShouldDetachTabDrop(sourceFenceBounds, new System.Drawing.Point(320, 250)),
+        "Dropping a tab anywhere inside its combined Fence must keep it in the group.");
+    Assert(!FenceControl.ShouldDetachTabDrop(sourceFenceBounds, new System.Drawing.Point(558, 250)),
+        "A small pointer overshoot near the combined Fence edge must not detach a tab.");
+    Assert(FenceControl.ShouldDetachTabDrop(sourceFenceBounds, new System.Drawing.Point(590, 250)),
+        "A tab must detach only after it is dropped clearly outside the combined Fence.");
+    Assert(FenceControl.BuildTabReorderPreviewOrder(4, 0, 2).SequenceEqual([1, 2, 0, 3]) &&
+           FenceControl.BuildTabReorderPreviewOrder(4, 3, 1).SequenceEqual([0, 3, 1, 2]),
+        "Browser-style tab dragging must calculate the live gap order in both directions before drop.");
+    Assert(FenceControl.CalculateTabReorderTargetIndex(20, 1, [0, 90, 180], [90, 90, 90]) == 0 &&
+           FenceControl.CalculateTabReorderTargetIndex(100, 1, [0, 90, 180], [90, 90, 90]) == 1 &&
+           FenceControl.CalculateTabReorderTargetIndex(250, 1, [0, 90, 180], [90, 90, 90]) == 2,
+        "A middle tab must reach the left, middle, and right insertion positions without relying on its transparent source slot receiving drag events.");
+    Assert(FenceControl.CalculateTabReorderTargetIndex(140, 0, [90, 0, 180], [90, 90, 90]) == 1 &&
+           FenceControl.CalculateTabReorderTargetIndex(80, 2, [0, 90, 180], [90, 90, 90]) == 1,
+        "Edge tabs must be able to enter the middle insertion position using pointer geometry.");
+    Assert(!FenceControl.ShouldAllowExternalTabMove(false) &&
+           FenceControl.ShouldAllowExternalTabMove(true),
+        "Dragging a tab out of its group or into another group must require Shift from drag start.");
+    Assert(!FenceControl.ShouldStartTabOperation(System.Windows.Input.ModifierKeys.None) &&
+           FenceControl.ShouldStartTabOperation(System.Windows.Input.ModifierKeys.Shift),
+        "An ordinary tab-header drag must move the complete Fence; only Shift may start tab sorting or detaching.");
+    Assert(FenceControl.ShouldConstrainTabDragToHeader(externalMoveAllowed: false) &&
+           !FenceControl.ShouldConstrainTabDragToHeader(externalMoveAllowed: true),
+        "An ordinary tab reorder preview must remain locked to the source header while Shift-drag may leave it.");
+    var sourceHeader = new System.Windows.Rect(20, 30, 500, 34);
+    Assert(!FenceControl.ShouldCollapseDraggedTabSlot(true, sourceHeader, new System.Windows.Point(250, 47)) &&
+           !FenceControl.ShouldCollapseDraggedTabSlot(true, sourceHeader, new System.Windows.Point(500, 47)) &&
+           FenceControl.ShouldCollapseDraggedTabSlot(true, sourceHeader, new System.Windows.Point(540, 47)) &&
+           !FenceControl.ShouldCollapseDraggedTabSlot(false, sourceHeader, new System.Windows.Point(540, 47)),
+        "The complete large title bar must remain a three-position reorder zone, while crossing its horizontal edge must stop reordering and collapse the source slot.");
+    Assert(FenceControl.ShouldCompactTabDragPreview(true, true, false) &&
+           FenceControl.ShouldCompactTabDragPreview(true, false, true) &&
+           FenceControl.ShouldCompactTabDragPreview(false, true, false) &&
+           !FenceControl.ShouldCompactTabDragPreview(false, false, true),
+        "A dragged tab must remain compact anywhere in its original group and compact only in another Fence's middle merge zone.");
     Assert(MainWindow.GetTabDragRemainderIndex(0, 0, 3) == 1 &&
            MainWindow.GetTabDragRemainderIndex(2, 2, 3) == 1,
         "Dragging the active tab must immediately reveal a remaining tab in the original group.");
@@ -1050,6 +1111,10 @@ static void TestTabMergeRules()
     Assert(!MainWindow.IsMergeCandidate(rightThird, target), "The right third of the target header must not trigger tab merging.");
     Assert(MainWindow.IsPointerInMergeZone(new System.Windows.Point(450, 117), target), "A pointer in the middle third should trigger the initial merge preview.");
     Assert(!MainWindow.IsPointerInMergeZone(new System.Windows.Point(330, 117), target), "A pointer outside the middle third should not trigger the initial merge preview.");
+    Assert(MainWindow.IsPointInMergeZone(new System.Windows.Point(450, 94), target, 10),
+        "A dragged header visually overlapping the target edge should use a small vertical tolerance.");
+    Assert(!MainWindow.IsPointInMergeZone(new System.Windows.Point(450, 88), target, 10),
+        "The merge tolerance must not accept a visibly separated header.");
 
     var config = new AppConfig
     {
@@ -1912,7 +1977,7 @@ static void TestFenceControlBindingAndLayout(string root)
                 $"The Fence preview-drop handler must accept nested ListView file data and move it into the target folder. " +
                 $"target={File.Exists(previewDropTarget)}, source={File.Exists(previewDropSource)}, handled={previewDropEvent.Handled}, effects={previewDropEvent.Effects}");
             var tabDragPreview = control.CreateTabDragPreviewForTesting();
-            Assert(tabDragPreview.Content is FenceControl
+            Assert(FenceControl.GetTabDragPreviewFenceForTesting(tabDragPreview) is FenceControl
                    {
                        Width: > 0,
                        Height: > 0,
@@ -1953,6 +2018,12 @@ static void TestFenceControlBindingAndLayout(string root)
             Assert(desktopGroup.IsInnerPanelTransparentForTesting, "Clean Fence style should remove the inner content panel.");
             Assert(!desktopGroup.IsFooterVisibleForTesting, "Clean Fence style should remove the footer.");
             Assert(!desktopGroup.IsResizeHandleVisibleForTesting, "Resize handle should stay hidden until pointer hover.");
+            desktopGroup.SetMergePreview(true);
+            Assert(desktopGroup.IsMergePreviewVisibleForTesting,
+                "Hovering the middle merge zone must restore the visible target preview while the dragged Fence compacts.");
+            desktopGroup.SetMergePreview(false);
+            Assert(!desktopGroup.IsMergePreviewVisibleForTesting,
+                "Leaving the merge zone must clear the target merge preview.");
             Assert(!FenceControl.IsNearResizeHandle(new System.Windows.Point(180, 120), 360, 420, handleAtTop: false),
                 "Pointer in the middle of a Fence should not reveal the resize handle.");
             Assert(FenceControl.IsNearResizeHandle(new System.Windows.Point(350, 410), 360, 420, handleAtTop: false),
@@ -1984,14 +2055,64 @@ static void TestFenceControlBindingAndLayout(string root)
             };
             desktopGroup.SetTabStatus(3, 1, ["One", "Two", "Three"], useTabStrip: true,
                 equalTabWidths: true, tabConfigs: dragTabs);
+            desktopGroup.Measure(new System.Windows.Size(420, 320));
+            desktopGroup.Arrange(new System.Windows.Rect(0, 0, 420, 320));
+            desktopGroup.UpdateLayout();
+            var tabStrip = (System.Windows.Controls.Grid)desktopGroup.FindName("TabStripPanel");
+            var reorderTarget = tabStrip.Children.OfType<System.Windows.Controls.Border>().ElementAt(2);
+            (int From, int To)? requestedReorder = null;
+            desktopGroup.TabReorderRequested += (from, to) => requestedReorder = (from, to);
+            var tabDropData = new System.Windows.DataObject();
+            tabDropData.SetData("MiniFences.TabFenceId", "drag-one");
+            tabDropData.SetData("MiniFences.TabIndex", 0);
+            var tabPreviewDropEvent = (System.Windows.DragEventArgs)dragEventConstructor.Invoke([
+                tabDropData,
+                System.Windows.DragDropKeyStates.LeftMouseButton,
+                System.Windows.DragDropEffects.Move,
+                reorderTarget,
+                new System.Windows.Point(10, 10)
+            ]);
+            tabPreviewDropEvent.RoutedEvent = System.Windows.DragDrop.PreviewDropEvent;
+            reorderTarget.RaiseEvent(tabPreviewDropEvent);
+            Assert(!tabPreviewDropEvent.Handled,
+                "The outer Fence preview-drop handler must leave a tab-strip drop for the target tab.");
+            var tabDropEvent = (System.Windows.DragEventArgs)dragEventConstructor.Invoke([
+                tabDropData,
+                System.Windows.DragDropKeyStates.LeftMouseButton,
+                System.Windows.DragDropEffects.Move,
+                reorderTarget,
+                new System.Windows.Point(10, 10)
+            ]);
+            tabDropEvent.RoutedEvent = System.Windows.DragDrop.DropEvent;
+            reorderTarget.RaiseEvent(tabDropEvent);
+            Assert(requestedReorder == (0, 2) && tabDropEvent.Effects == System.Windows.DragDropEffects.Move,
+                "Dropping a combined-Fence tab on another tab must request reordering instead of detaching it.");
             desktopGroup.HideTabForActiveDrag("drag-two");
-            Assert(desktopGroup.VisibleTabCountForTesting == 2 &&
-                   desktopGroup.TabColumnWidthsForTesting[1].Value == 0 &&
+            Assert(desktopGroup.VisibleTabCountForTesting == 3 &&
+                   desktopGroup.TabColumnWidthsForTesting[1].Value > 0 &&
+                   desktopGroup.IsTabDragSlotPreservedForTesting(1) &&
                    desktopGroup.FirstTabCornerRadiusForTesting.TopLeft == 8,
-                "The tab being dragged out must disappear from the original group's title strip.");
+                "The dragged tab must leave a non-interactive browser-style insertion slot in the title strip.");
+            desktopGroup.CollapseActiveTabDragSlotForTesting(true);
+            Assert(desktopGroup.VisibleTabCountForTesting == 2 &&
+                   desktopGroup.TabColumnWidthsForTesting[2].Value == 0 &&
+                   desktopGroup.AreRemainingTabSlotsContiguousForTesting &&
+                   desktopGroup.AreTabReorderTransformsResetForTesting,
+                "Once a Shift-drag leaves the source title bar, its placeholder must collapse so the remaining tabs close the gap.");
+            desktopGroup.CollapseActiveTabDragSlotForTesting(false);
+            Assert(desktopGroup.VisibleTabCountForTesting == 3 &&
+                   desktopGroup.IsTabDragSlotPreservedForTesting(1) &&
+                   desktopGroup.AreTabReorderTransformsResetForTesting,
+                "Returning the dragged tab to its source title bar must restore the insertion slot.");
             desktopGroup.HideTabForActiveDrag("drag-one");
             Assert(desktopGroup.FirstTabCornerRadiusForTesting.TopLeft == 8,
                 "After the first tab is detached, the first remaining visible tab must inherit the Fence corner.");
+            desktopGroup.SetTabStatus(3, 0, ["One", "Two", "Three"], useTabStrip: true,
+                equalTabWidths: true, tabConfigs: dragTabs);
+            desktopGroup.HideTabForActiveDrag("drag-one");
+            desktopGroup.PreviewTabReorderForTesting(0, 2);
+            Assert(desktopGroup.TabGridColumnsForTesting.SequenceEqual([2, 0, 1]),
+                "Dragging the left tab over the right tab must move both remaining tabs left and place the insertion slot on the right, even without a child DragOver event.");
             desktopGroup.StopForTesting();
 
             var secondFence = new FenceControl(new FenceConfig

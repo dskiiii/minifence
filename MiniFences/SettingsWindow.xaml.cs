@@ -19,10 +19,18 @@ public partial class SettingsWindow : Window
     private string? _pagePreviewDragFenceId;
     private int _tabPreviewIndex;
     private bool _rollupPreviewCollapsed;
+    private bool _rollupPreviewHoverExpanded;
+    private DispatcherTimer? _rollupPreviewSingleClickTimer;
+    private System.Windows.Point _rollupPreviewDragStart;
+    private double _rollupPreviewDragTop;
+    private bool _rollupPreviewPointerDown;
+    private bool _rollupPreviewDragging;
+    private string _rollupPreviewDock = "Standard";
     private bool _displayPreviewTemporarilyHidden;
-    private bool _hasLoaded;
-    private DateTime _lastReloadUtc = DateTime.MinValue;
+    private bool _refreshFromMainWindowPending;
     private CancellationTokenSource? _contentIconLoadCancellation;
+    private readonly HashSet<System.Windows.Controls.ComboBox> _tracedComboBoxes = [];
+    private readonly HashSet<System.Windows.Controls.Button> _tracedButtons = [];
 
     public SettingsWindow(MainWindow mainWindow)
     {
@@ -31,18 +39,74 @@ public partial class SettingsWindow : Window
         NavigationList.SelectedIndex = 0;
         Loaded += (_, _) =>
         {
-            _hasLoaded = true;
             ReloadState();
+            EnableUiTraceForTesting();
         };
-        Activated += (_, _) =>
+        Activated += (_, _) => _mainWindow.CancelActiveRenamesForSettings();
+        StateChanged += (_, _) =>
         {
-            _mainWindow.CancelActiveRenamesForSettings();
-            if (_hasLoaded && DateTime.UtcNow - _lastReloadUtc > TimeSpan.FromSeconds(1)) ReloadState();
+            if (WindowState == WindowState.Minimized) CloseTransientInteractions();
         };
+        IsVisibleChanged += (_, _) =>
+        {
+            if (!IsVisible) CloseTransientInteractions();
+        };
+    }
+
+    private void CloseTransientInteractions()
+    {
+        foreach (var comboBox in FindVisualChildren<System.Windows.Controls.ComboBox>(this))
+            comboBox.IsDropDownOpen = false;
+        _rollupPreviewSingleClickTimer?.Stop();
+        _rollupPreviewPointerDown = false;
+        _rollupPreviewDragging = false;
+        if (RollupPreviewFence?.IsMouseCaptured == true) RollupPreviewFence.ReleaseMouseCapture();
+        Keyboard.ClearFocus();
+    }
+
+    private void EnableUiTraceForTesting()
+    {
+        if (!string.Equals(Environment.GetEnvironmentVariable("MINIFENCES_UI_TRACE"), "1", StringComparison.Ordinal)) return;
+        AddHandler(System.Windows.Controls.Button.ClickEvent, new RoutedEventHandler((_, e) =>
+        {
+            if (e.OriginalSource is FrameworkElement element)
+                AppLogger.Log($"Settings button Click reached: {element.Name}");
+        }), true);
+        TraceVisibleComboBoxesForTesting();
+    }
+
+    private void TraceVisibleComboBoxesForTesting()
+    {
+        if (!string.Equals(Environment.GetEnvironmentVariable("MINIFENCES_UI_TRACE"), "1", StringComparison.Ordinal)) return;
+        foreach (var comboBox in FindVisualChildren<System.Windows.Controls.ComboBox>(this))
+        {
+            if (comboBox.ActualWidth <= 0 || comboBox.ActualHeight <= 0 || !_tracedComboBoxes.Add(comboBox)) continue;
+            var origin = comboBox.TransformToAncestor(this).Transform(new System.Windows.Point(0, 0));
+            AppLogger.Log($"Settings ComboBox bounds: {comboBox.Name}; Left={origin.X:0}; Top={origin.Y:0}; Width={comboBox.ActualWidth:0}; Height={comboBox.ActualHeight:0}");
+            comboBox.DropDownOpened += (_, _) => AppLogger.Log($"Settings ComboBox opened: {comboBox.Name}");
+            comboBox.DropDownClosed += (_, _) => AppLogger.Log($"Settings ComboBox closed: {comboBox.Name}");
+        }
+        foreach (var button in FindVisualChildren<System.Windows.Controls.Button>(this))
+        {
+            if (button.ActualWidth <= 0 || button.ActualHeight <= 0 || !_tracedButtons.Add(button)) continue;
+            var origin = button.TransformToAncestor(this).Transform(new System.Windows.Point(0, 0));
+            AppLogger.Log($"Settings Button bounds: {button.Name}; Left={origin.X:0}; Top={origin.Y:0}; Width={button.ActualWidth:0}; Height={button.ActualHeight:0}");
+        }
+    }
+
+    private static IEnumerable<T> FindVisualChildren<T>(DependencyObject parent) where T : DependencyObject
+    {
+        for (var index = 0; index < VisualTreeHelper.GetChildrenCount(parent); index++)
+        {
+            var child = VisualTreeHelper.GetChild(parent, index);
+            if (child is T match) yield return match;
+            foreach (var descendant in FindVisualChildren<T>(child)) yield return descendant;
+        }
     }
 
     protected override void OnClosed(EventArgs e)
     {
+        _rollupPreviewSingleClickTimer?.Stop();
         _contentIconLoadCancellation?.Cancel();
         _contentIconLoadCancellation?.Dispose();
         _contentIconLoadCancellation = null;
@@ -74,7 +138,6 @@ public partial class SettingsWindow : Window
 
     internal void ReloadState()
     {
-        _lastReloadUtc = DateTime.UtcNow;
         var selectedFenceId = SelectedFence?.Id;
         var selectedStyleFenceId = SelectedStyleFence?.Id;
         _updatingControls = true;
@@ -139,6 +202,7 @@ public partial class SettingsWindow : Window
                 .FirstOrDefault(item => string.Equals(item.Tag?.ToString(), _mainWindow.TabViewMode, StringComparison.OrdinalIgnoreCase));
             TabWidthComboBox.SelectedItem = TabWidthComboBox.Items.OfType<ComboBoxItem>()
                 .FirstOrDefault(item => string.Equals(item.Tag?.ToString(), _mainWindow.TabWidthMode, StringComparison.OrdinalIgnoreCase));
+            UpdateTabOptionAvailability();
             PreviousPageHotkeyTextBox.Text = _mainWindow.PreviousPageHotkey;
             NextPageHotkeyTextBox.Text = _mainWindow.NextPageHotkey;
             TopmostHotkeyTextBox.Text = _mainWindow.ToggleTopmostHotkey;
@@ -179,7 +243,16 @@ public partial class SettingsWindow : Window
         }
     }
 
-    internal void RefreshFromMainWindow() => ReloadState();
+    internal void RefreshFromMainWindow()
+    {
+        if (_refreshFromMainWindowPending || !IsLoaded) return;
+        _refreshFromMainWindowPending = true;
+        Dispatcher.BeginInvoke(() =>
+        {
+            _refreshFromMainWindowPending = false;
+            if (IsVisible) ReloadState();
+        }, DispatcherPriority.Background);
+    }
 
     private void ReloadLayouts()
     {
@@ -215,8 +288,10 @@ public partial class SettingsWindow : Window
         var chinese = string.Equals(loc.Language, LocalizationService.Chinese, StringComparison.OrdinalIgnoreCase);
         HistoryNav.Content = chinese ? "操作历史" : "Action history";
         HistoryTitle.Text = chinese ? "操作历史" : "Action history";
-        HistoryDescription.Text = chinese ? "查看最近 30 天的操作并安全撤销上一步。" : "Review the last 30 days and safely undo the latest action.";
-        UndoSelectedHistoryButton.Content = chinese ? "撤销选中操作" : "Undo selected";
+        HistoryDescription.Text = chinese
+            ? "查看最近 30 天的操作。选择记录只用于打开相关位置；撤销始终作用于最近一步。"
+            : "Review the last 30 days. Selection is only used to open related locations; undo always applies to the latest action.";
+        UndoLastHistoryButton.Content = chinese ? "撤销上一步" : "Undo last action";
         OpenRelatedHistoryButton.Content = chinese ? "打开相关位置" : "Open related location";
         OpenRecycleBinButton.Content = chinese ? "打开回收站" : "Open Recycle Bin";
         ClearHistoryButton.Content = chinese ? "清空历史" : "Clear history";
@@ -322,6 +397,7 @@ public partial class SettingsWindow : Window
         TopDockTitleAtBottomOnExpandCheckBox.Content = loc.T("TopDockTitleAtBottomOnExpand");
         ClickTitleExpandCheckBox.Content = loc.T("ClickTitleExpand");
         HoverTitleExpandCheckBox.Content = loc.T("HoverTitleExpand");
+        RollupPreviewHint.Text = loc.T("PreviewRollupHint");
         FenceAppearanceTitle.Text = loc.T("FenceAppearance");
         FenceAppearanceDescription.Text = loc.T("FenceAppearanceDescription");
         BackgroundColorLabel.Text = loc.T("BackgroundColor");
@@ -401,6 +477,8 @@ public partial class SettingsWindow : Window
             case "Appearance": UpdateAppearanceControls(); break;
             case "History": ReloadHistory(); break;
         }
+        if (string.Equals(Environment.GetEnvironmentVariable("MINIFENCES_UI_TRACE"), "1", StringComparison.Ordinal))
+            Dispatcher.BeginInvoke(TraceVisibleComboBoxesForTesting, DispatcherPriority.Loaded);
     }
 
     internal static string? ResolvePanelName(string? navigationTag) => navigationTag switch
@@ -471,16 +549,14 @@ public partial class SettingsWindow : Window
     private void UpdateHistoryButtons()
     {
         var selected = SelectedHistory;
-        UndoSelectedHistoryButton.IsEnabled = selected is not null && _mainWindow.CanUndoAction(selected.Id);
+        UndoLastHistoryButton.IsEnabled = _mainWindow.CanUndoLastAction;
         OpenRelatedHistoryButton.IsEnabled = selected?.Transaction.Entries.Any(entry =>
             !string.IsNullOrWhiteSpace(entry.SourcePath) || !string.IsNullOrWhiteSpace(entry.DestinationPath)) == true;
     }
 
-    private void UndoSelectedHistoryButton_Click(object sender, RoutedEventArgs e)
+    private void UndoLastHistoryButton_Click(object sender, RoutedEventArgs e)
     {
-        if (SelectedHistory is null) return;
-        _mainWindow.UndoActionFromSettings(SelectedHistory.Id, this);
-        ReloadHistory();
+        _mainWindow.UndoLastActionFromSettings(this);
     }
 
     private void OpenRelatedHistoryButton_Click(object sender, RoutedEventArgs e)
@@ -615,21 +691,21 @@ public partial class SettingsWindow : Window
     {
         var fence = SelectedFence;
         FenceItemsTitle.Text = fence?.Title ?? _mainWindow.Localization.T("FenceContents");
-        var enabled = fence?.IsDesktopGroup == true;
+        var hasSelection = fence != null;
+        var assignmentEnabled = fence?.IsDesktopGroup == true;
         FencePageComboBox.ItemsSource = Enumerable.Range(1, _mainWindow.SettingsPageCount).ToArray();
         FencePageComboBox.SelectedItem = fence == null ? null : fence.PageIndex + 1;
         FencePageComboBox.IsEnabled = fence != null;
-        var unassignedItems = enabled ? _mainWindow.SettingsGetUnassignedDesktopItems() : Array.Empty<FolderItem>();
-        var fenceItems = enabled ? _mainWindow.SettingsGetFenceItems(fence!.Id) : Array.Empty<FolderItem>();
+        var unassignedItems = assignmentEnabled ? _mainWindow.SettingsGetUnassignedDesktopItems() : Array.Empty<FolderItem>();
+        var fenceItems = hasSelection ? _mainWindow.SettingsGetFenceItems(fence!.Id) : Array.Empty<FolderItem>();
         UnassignedItemsList.ItemsSource = unassignedItems;
         FenceItemsList.ItemsSource = fenceItems;
-        AssignItemsButton.IsEnabled = enabled;
-        UnassignItemsButton.IsEnabled = enabled;
+        UpdateFenceContentTransferButtons(assignmentEnabled);
 
         _contentIconLoadCancellation?.Cancel();
         _contentIconLoadCancellation?.Dispose();
         _contentIconLoadCancellation = null;
-        if (!enabled) return;
+        if (!hasSelection) return;
         _contentIconLoadCancellation = new CancellationTokenSource();
         _ = LoadContentIconsAsync(
             unassignedItems.Concat(fenceItems).DistinctBy(item => item.FullPath, StringComparer.OrdinalIgnoreCase).ToArray(),
@@ -666,6 +742,15 @@ public partial class SettingsWindow : Window
         if (paths.Length == 0) return;
         _mainWindow.SettingsAssignDesktopItems(fence.Id, paths);
         ReloadState();
+    }
+
+    private void FenceContentSelectionChanged(object sender, SelectionChangedEventArgs e) =>
+        UpdateFenceContentTransferButtons(SelectedFence?.IsDesktopGroup == true);
+
+    private void UpdateFenceContentTransferButtons(bool enabled)
+    {
+        AssignItemsButton.IsEnabled = enabled && UnassignedItemsList.SelectedItems.Count > 0;
+        UnassignItemsButton.IsEnabled = enabled && FenceItemsList.SelectedItems.Count > 0;
     }
 
     private void UnassignItemsButton_Click(object sender, RoutedEventArgs e)
@@ -1144,6 +1229,7 @@ public partial class SettingsWindow : Window
     {
         if (!_updatingControls)
         {
+            _displayPreviewTemporarilyHidden = false;
             _mainWindow.SettingsSetFencesVisible(ShowFencesCheckBox.IsChecked == true);
             ReloadState();
         }
@@ -1161,6 +1247,7 @@ public partial class SettingsWindow : Window
         }
 
         _mainWindow.SettingsSetDesktopDoubleClick(DesktopDoubleClickCheckBox.IsChecked == true);
+        if (DesktopDoubleClickCheckBox.IsChecked != true) _displayPreviewTemporarilyHidden = false;
         ReloadState();
         UpdateDisplayPreview();
     }
@@ -1180,8 +1267,22 @@ public partial class SettingsWindow : Window
         var widthMode = (TabWidthComboBox.SelectedItem as ComboBoxItem)?.Tag?.ToString() ?? "Content";
         _mainWindow.SettingsSetTabOptions(mode, widthMode, EnableTabCreationCheckBox.IsChecked == true,
             ConfirmTabCreationCheckBox.IsChecked == true, HoverSwitchTabsCheckBox.IsChecked == true);
+        UpdateTabOptionAvailability();
         UpdateTabPreview();
     }
+
+    private void UpdateTabOptionAvailability()
+    {
+        var strip = (TabViewComboBox.SelectedItem as ComboBoxItem)?.Tag?.ToString() == "Strip";
+        var availability = GetTabOptionAvailability(strip, EnableTabCreationCheckBox.IsChecked == true);
+        TabWidthComboBox.IsEnabled = availability.TabWidths;
+        ConfirmTabCreationCheckBox.IsEnabled = availability.ConfirmCreation;
+        HoverSwitchTabsCheckBox.IsEnabled = availability.HoverSwitch;
+    }
+
+    internal static (bool TabWidths, bool ConfirmCreation, bool HoverSwitch)
+        GetTabOptionAvailability(bool titleTabStrip, bool tabCreationEnabled) =>
+        (titleTabStrip, tabCreationEnabled, titleTabStrip);
 
     private void RollupSettings_Changed(object sender, RoutedEventArgs e)
     {
@@ -1192,9 +1293,29 @@ public partial class SettingsWindow : Window
             BottomDockTitleCheckBox.IsChecked == true, TopDockTitleAtBottomOnExpandCheckBox.IsChecked == true,
             ClickTitleExpandCheckBox.IsChecked == true, HoverTitleExpandCheckBox.IsChecked == true);
         UpdateBottomRollupOptionAvailability();
+        UpdateRollupGestureOptionAvailability();
         if (ReferenceEquals(sender, AutoEdgeRollupCheckBox) && AutoEdgeRollupCheckBox.IsChecked == true)
+        {
             _rollupPreviewCollapsed = true;
+            _rollupPreviewHoverExpanded = false;
+        }
+        if (ReferenceEquals(sender, HoverTitleExpandCheckBox) && HoverTitleExpandCheckBox.IsChecked != true)
+            _rollupPreviewHoverExpanded = false;
+        if (EnableRollupCheckBox.IsChecked != true)
+        {
+            _rollupPreviewCollapsed = false;
+            _rollupPreviewHoverExpanded = false;
+        }
         UpdateRollupPreview();
+    }
+
+    private void UpdateRollupGestureOptionAvailability()
+    {
+        var enabled = EnableRollupCheckBox.IsChecked == true;
+        DoubleClickRollupCheckBox.IsEnabled = enabled;
+        AutoEdgeRollupCheckBox.IsEnabled = enabled;
+        ClickTitleExpandCheckBox.IsEnabled = enabled;
+        HoverTitleExpandCheckBox.IsEnabled = enabled;
     }
 
     private void UpdateBottomRollupOptionAvailability()
@@ -1202,8 +1323,7 @@ public partial class SettingsWindow : Window
         var availability = GetBottomRollupOptionAvailability(
             EnableRollupCheckBox.IsChecked == true,
             AutoEdgeRollupCheckBox.IsChecked == true,
-            AllowBottomEdgeRollupCheckBox.IsChecked == true,
-            BottomDockTitleCheckBox.IsChecked == true);
+            AllowBottomEdgeRollupCheckBox.IsChecked == true);
         AllowBottomEdgeRollupCheckBox.IsEnabled = availability.AllowBottomEdge;
         BottomDockTitleCheckBox.IsEnabled = availability.BottomTitle;
         TopDockTitleAtBottomOnExpandCheckBox.IsEnabled = availability.MoveTitle;
@@ -1213,17 +1333,18 @@ public partial class SettingsWindow : Window
         GetBottomRollupOptionAvailability(
             bool rollupEnabled,
             bool automaticEdgeRollupEnabled,
-            bool allowBottomEdge,
-            bool bottomTitle)
+            bool allowBottomEdge)
     {
         var enabled = rollupEnabled && automaticEdgeRollupEnabled;
-        return (enabled, enabled, enabled);
+        return (enabled, enabled && allowBottomEdge, enabled);
     }
 
     private void UpdateSettingsPreviews()
     {
         UpdateDisplayPreview();
         UpdateTabPreview();
+        UpdateTabOptionAvailability();
+        UpdateRollupGestureOptionAvailability();
         UpdateRollupPreview();
     }
 
@@ -1252,13 +1373,49 @@ public partial class SettingsWindow : Window
         TabPreviewPanel.ColumnDefinitions.Clear();
         var strip = (TabViewComboBox.SelectedItem as ComboBoxItem)?.Tag?.ToString() == "Strip";
         var equal = (TabWidthComboBox.SelectedItem as ComboBoxItem)?.Tag?.ToString() == "Equal";
-        var labels = new[] { "Desktop", "Work", "Games" };
+        var labels = new[]
+        {
+            _mainWindow.Localization.T("PreviewTabDesktop"),
+            _mainWindow.Localization.T("PreviewTabWork"),
+            _mainWindow.Localization.T("PreviewTabGames")
+        };
         if (!strip)
         {
-            TabPreviewPanel.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
             TabPreviewPanel.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-            var arrows = new TextBlock { Text = $"‹  {labels[_tabPreviewIndex]}  ›", Foreground = System.Windows.Media.Brushes.White, Margin = new Thickness(12, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center, FontWeight = FontWeights.SemiBold };
-            TabPreviewPanel.Children.Add(arrows);
+            TabPreviewPanel.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            var title = new TextBlock
+            {
+                Text = labels[_tabPreviewIndex],
+                Foreground = System.Windows.Media.Brushes.White,
+                Margin = new Thickness(12, 0, 8, 0),
+                VerticalAlignment = VerticalAlignment.Center,
+                FontWeight = FontWeights.SemiBold,
+                TextTrimming = TextTrimming.CharacterEllipsis
+            };
+            var navigation = new StackPanel
+            {
+                Orientation = System.Windows.Controls.Orientation.Horizontal,
+                Margin = new Thickness(8, 0, 8, 0),
+                HorizontalAlignment = System.Windows.HorizontalAlignment.Right,
+                VerticalAlignment = VerticalAlignment.Center
+            };
+            var previous = CreateCompactTabPreviewArrow("‹", -1);
+            var status = new TextBlock
+            {
+                Text = $"{_tabPreviewIndex + 1}/{labels.Length}",
+                MinWidth = 32,
+                Foreground = new SolidColorBrush(System.Windows.Media.Color.FromArgb(221, 255, 255, 255)),
+                FontSize = 11,
+                TextAlignment = TextAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Center
+            };
+            var next = CreateCompactTabPreviewArrow("›", 1);
+            TabPreviewPanel.Children.Add(title);
+            navigation.Children.Add(previous);
+            navigation.Children.Add(status);
+            navigation.Children.Add(next);
+            Grid.SetColumn(navigation, 1);
+            TabPreviewPanel.Children.Add(navigation);
         }
         else
         {
@@ -1266,45 +1423,80 @@ public partial class SettingsWindow : Window
             {
                 TabPreviewPanel.ColumnDefinitions.Add(new ColumnDefinition { Width = equal ? new GridLength(1, GridUnitType.Star) : GridLength.Auto });
                 var selectedIndex = index;
-                var button = new System.Windows.Controls.Button
+                var tab = new Border
                 {
-                    Content = labels[index],
+                    MinWidth = equal ? 0 : 72,
+                    MaxWidth = equal ? double.PositiveInfinity : 150,
                     Padding = new Thickness(14, 0, 14, 0),
-                    Foreground = System.Windows.Media.Brushes.White,
-                    Background = index == _tabPreviewIndex ? new SolidColorBrush(System.Windows.Media.Color.FromArgb(90, 255, 255, 255)) : System.Windows.Media.Brushes.Transparent,
-                    BorderThickness = new Thickness(0)
+                    Background = new SolidColorBrush(index == _tabPreviewIndex
+                        ? System.Windows.Media.Color.FromArgb(210, 255, 255, 255)
+                        : System.Windows.Media.Color.FromArgb(48, 0, 0, 0)),
+                    CornerRadius = index == 0
+                        ? new CornerRadius(7, 0, 0, 0)
+                        : index == labels.Length - 1 ? new CornerRadius(0, 7, 0, 0) : new CornerRadius(0),
+                    Cursor = System.Windows.Input.Cursors.Hand,
+                    Child = new TextBlock
+                    {
+                        Text = labels[index],
+                        Foreground = index == _tabPreviewIndex
+                            ? System.Windows.Media.Brushes.Black
+                            : System.Windows.Media.Brushes.White,
+                        FontWeight = index == _tabPreviewIndex ? FontWeights.SemiBold : FontWeights.Normal,
+                        HorizontalAlignment = System.Windows.HorizontalAlignment.Stretch,
+                        VerticalAlignment = VerticalAlignment.Center,
+                        TextAlignment = TextAlignment.Center,
+                        TextTrimming = TextTrimming.CharacterEllipsis
+                    }
                 };
-                button.Click += (_, _) => { _tabPreviewIndex = selectedIndex; UpdateTabPreview(); };
-                button.MouseEnter += (_, _) =>
+                tab.MouseLeftButtonUp += (_, _) => { _tabPreviewIndex = selectedIndex; UpdateTabPreview(); };
+                tab.MouseEnter += (_, _) =>
                 {
                     if (HoverSwitchTabsCheckBox.IsChecked != true) return;
                     _tabPreviewIndex = selectedIndex;
                     UpdateTabPreview();
                 };
-                Grid.SetColumn(button, index);
-                TabPreviewPanel.Children.Add(button);
+                Grid.SetColumn(tab, index);
+                TabPreviewPanel.Children.Add(tab);
             }
         }
-        TabPreviewContent.Text = $"{labels[_tabPreviewIndex]}  ·  " + (EnableTabCreationCheckBox.IsChecked == true
-            ? _mainWindow.Localization.T("PreviewTabCreationOn") : _mainWindow.Localization.T("PreviewTabCreationOff"));
+        TabPreviewContent.Text = "📄    📁    🖼";
+    }
+
+    private TextBlock CreateCompactTabPreviewArrow(string glyph, int direction)
+    {
+        var arrow = new TextBlock
+        {
+            Text = glyph,
+            Width = 20,
+            Foreground = System.Windows.Media.Brushes.White,
+            FontSize = 18,
+            TextAlignment = TextAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center,
+            Cursor = System.Windows.Input.Cursors.Hand
+        };
+        arrow.MouseLeftButtonDown += (_, e) =>
+        {
+            _tabPreviewIndex = (_tabPreviewIndex + direction + 3) % 3;
+            UpdateTabPreview();
+            e.Handled = true;
+        };
+        return arrow;
     }
 
     private void UpdateRollupPreview()
     {
         if (RollupPreviewContent == null) return;
-        var collapsed = EnableRollupCheckBox.IsChecked == true && _rollupPreviewCollapsed;
-        var topMovingPreview = AutoEdgeRollupCheckBox.IsChecked == true &&
+        var collapsed = EnableRollupCheckBox.IsChecked == true && _rollupPreviewCollapsed &&
+                        !_rollupPreviewHoverExpanded;
+        var topEdgePreview = AutoEdgeRollupCheckBox.IsChecked == true && _rollupPreviewDock == "Top";
+        var topMovingPreview = topEdgePreview &&
                                TopDockTitleAtBottomOnExpandCheckBox.IsChecked == true;
-        var bottomEdgePreview = !topMovingPreview &&
-                                AutoEdgeRollupCheckBox.IsChecked == true &&
+        var bottomEdgePreview = AutoEdgeRollupCheckBox.IsChecked == true && _rollupPreviewDock == "Bottom" &&
                                 AllowBottomEdgeRollupCheckBox.IsChecked == true;
         var titleAtBottom = topMovingPreview
             ? !collapsed
             : bottomEdgePreview && BottomDockTitleCheckBox.IsChecked == true;
         RollupPreviewContent.Visibility = collapsed ? Visibility.Collapsed : Visibility.Visible;
-        RollupPreviewFence.VerticalAlignment = bottomEdgePreview
-            ? VerticalAlignment.Bottom
-            : VerticalAlignment.Top;
         if (titleAtBottom)
         {
             RollupPreviewFirstRow.Height = collapsed ? new GridLength(0) : new GridLength(82);
@@ -1333,35 +1525,151 @@ public partial class SettingsWindow : Window
                     ? _mainWindow.Localization.T("PreviewExpandedBottomTitle")
                     : _mainWindow.Localization.T("PreviewExpanded");
         RollupPreviewFence.Opacity = EnableRollupCheckBox.IsChecked == true ? 1.0 : 0.55;
+        if (!_rollupPreviewDragging)
+        {
+            var fenceHeight = collapsed ? 34d : 116d;
+            Canvas.SetTop(RollupPreviewFence, GetRollupPreviewTop(_rollupPreviewDock,
+                RollupPreviewCanvas.ActualHeight > 0 ? RollupPreviewCanvas.ActualHeight : 210d, fenceHeight));
+        }
     }
 
     private void RollupPreviewFence_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
     {
+        _rollupPreviewPointerDown = true;
+        _rollupPreviewDragging = false;
+        _rollupPreviewDragStart = e.GetPosition(RollupPreviewCanvas);
+        _rollupPreviewDragTop = Canvas.GetTop(RollupPreviewFence);
+        if (double.IsNaN(_rollupPreviewDragTop)) _rollupPreviewDragTop = 0;
+        RollupPreviewFence.CaptureMouse();
         if (EnableRollupCheckBox.IsChecked != true) return;
-        if ((DoubleClickRollupCheckBox.IsChecked == true && e.ClickCount == 2) ||
-            (ClickTitleExpandCheckBox.IsChecked == true && _rollupPreviewCollapsed))
+        if (DoubleClickRollupCheckBox.IsChecked == true && e.ClickCount == 2)
         {
-            _rollupPreviewCollapsed = !_rollupPreviewCollapsed;
+            _rollupPreviewSingleClickTimer?.Stop();
+            (_rollupPreviewCollapsed, _rollupPreviewHoverExpanded) =
+                ApplyRollupPreviewDoubleClick(_rollupPreviewCollapsed, _rollupPreviewHoverExpanded);
             UpdateRollupPreview();
+            e.Handled = true;
+            return;
+        }
+        if (e.ClickCount != 1 || ClickTitleExpandCheckBox.IsChecked != true || !_rollupPreviewCollapsed) return;
+        if (DoubleClickRollupCheckBox.IsChecked != true) { ExpandRollupPreviewPermanently(); return; }
+        _rollupPreviewSingleClickTimer ??= CreateRollupPreviewSingleClickTimer();
+        _rollupPreviewSingleClickTimer.Stop();
+        _rollupPreviewSingleClickTimer.Start();
+    }
+
+    private void RollupPreviewFence_MouseMove(object sender, System.Windows.Input.MouseEventArgs e)
+    {
+        if (!_rollupPreviewPointerDown || e.LeftButton != MouseButtonState.Pressed) return;
+        var point = e.GetPosition(RollupPreviewCanvas);
+        var deltaY = point.Y - _rollupPreviewDragStart.Y;
+        if (!_rollupPreviewDragging && Math.Abs(deltaY) < SystemParameters.MinimumVerticalDragDistance) return;
+        _rollupPreviewDragging = true;
+        _rollupPreviewSingleClickTimer?.Stop();
+        var height = RollupPreviewFence.ActualHeight > 0 ? RollupPreviewFence.ActualHeight : 116d;
+        var maximum = Math.Max(0, RollupPreviewCanvas.ActualHeight - height);
+        Canvas.SetTop(RollupPreviewFence, Math.Clamp(_rollupPreviewDragTop + deltaY, 0, maximum));
+    }
+
+    private void RollupPreviewFence_MouseLeftButtonUp(object sender, MouseButtonEventArgs e)
+    {
+        var wasDragging = CommitRollupPreviewDrag();
+        _rollupPreviewPointerDown = false;
+        _rollupPreviewDragging = false;
+        RollupPreviewFence.ReleaseMouseCapture();
+        if (wasDragging)
+        {
+            UpdateRollupPreview();
+            e.Handled = true;
         }
     }
+
+    private void RollupPreviewFence_LostMouseCapture(object sender, System.Windows.Input.MouseEventArgs e)
+    {
+        var wasDragging = CommitRollupPreviewDrag();
+        _rollupPreviewPointerDown = false;
+        _rollupPreviewDragging = false;
+        if (wasDragging) UpdateRollupPreview();
+    }
+
+    private bool CommitRollupPreviewDrag()
+    {
+        if (!_rollupPreviewDragging) return false;
+        var height = RollupPreviewFence.ActualHeight > 0 ? RollupPreviewFence.ActualHeight : 116d;
+        _rollupPreviewDock = GetRollupPreviewDock(Canvas.GetTop(RollupPreviewFence),
+            RollupPreviewCanvas.ActualHeight, height);
+        _rollupPreviewHoverExpanded = false;
+        if (ShouldRollupPreviewAtDock(EnableRollupCheckBox.IsChecked == true,
+                AutoEdgeRollupCheckBox.IsChecked == true,
+                AllowBottomEdgeRollupCheckBox.IsChecked == true, _rollupPreviewDock))
+            _rollupPreviewCollapsed = true;
+        return true;
+    }
+
+    internal static bool ShouldRollupPreviewAtDock(bool rollupEnabled, bool automaticEdgeRollupEnabled,
+        bool allowBottomEdge, string dock) =>
+        rollupEnabled && automaticEdgeRollupEnabled &&
+        (dock == "Top" || (dock == "Bottom" && allowBottomEdge));
+
+    internal static string GetRollupPreviewDock(double top, double areaHeight, double fenceHeight,
+        double threshold = 18)
+    {
+        var maximum = Math.Max(0, areaHeight - fenceHeight);
+        if (top <= threshold) return "Top";
+        if (top >= maximum - threshold) return "Bottom";
+        return "Standard";
+    }
+
+    internal static double GetRollupPreviewTop(string dock, double areaHeight, double fenceHeight)
+    {
+        var maximum = Math.Max(0, areaHeight - fenceHeight);
+        return dock switch
+        {
+            "Top" => 0,
+            "Bottom" => maximum,
+            _ => maximum / 2
+        };
+    }
+
+    private DispatcherTimer CreateRollupPreviewSingleClickTimer()
+    {
+        var timer = new DispatcherTimer
+        {
+            Interval = TimeSpan.FromMilliseconds(System.Windows.Forms.SystemInformation.DoubleClickTime + 20)
+        };
+        timer.Tick += (_, _) => { timer.Stop(); ExpandRollupPreviewPermanently(); };
+        return timer;
+    }
+
+    private void ExpandRollupPreviewPermanently()
+    {
+        _rollupPreviewCollapsed = false;
+        _rollupPreviewHoverExpanded = false;
+        UpdateRollupPreview();
+    }
+
+    internal static (bool Collapsed, bool HoverExpanded)
+        ApplyRollupPreviewDoubleClick(bool collapsed, bool hoverExpanded) =>
+        hoverExpanded ? (true, false) : (!collapsed, false);
 
     private void RollupPreviewFence_MouseEnter(object sender, System.Windows.Input.MouseEventArgs e)
     {
         if (EnableRollupCheckBox.IsChecked == true && HoverTitleExpandCheckBox.IsChecked == true && _rollupPreviewCollapsed)
         {
-            _rollupPreviewCollapsed = false;
+            _rollupPreviewHoverExpanded = true;
             UpdateRollupPreview();
         }
     }
 
     private void RollupPreviewFence_MouseLeave(object sender, System.Windows.Input.MouseEventArgs e)
     {
-        if (EnableRollupCheckBox.IsChecked == true && HoverTitleExpandCheckBox.IsChecked == true)
-        {
+        if (_rollupPreviewPointerDown) return;
+        _rollupPreviewHoverExpanded = false;
+        if (ShouldRollupPreviewAtDock(EnableRollupCheckBox.IsChecked == true,
+                AutoEdgeRollupCheckBox.IsChecked == true,
+                AllowBottomEdgeRollupCheckBox.IsChecked == true, _rollupPreviewDock))
             _rollupPreviewCollapsed = true;
-            UpdateRollupPreview();
-        }
+        UpdateRollupPreview();
     }
 
     private void BackgroundColorButton_Click(object sender, RoutedEventArgs e)
