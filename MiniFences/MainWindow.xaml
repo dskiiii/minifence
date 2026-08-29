@@ -14,6 +14,7 @@
     <Window.ContextMenu>
         <ContextMenu Opened="DesktopContextMenu_Opened">
             <MenuItem x:Name="DesktopSettingsMenuItem" Header="Settings" Click="SettingsMenuItem_Click" />
+            <MenuItem x:Name="DesktopUndoMenuItem" Header="Undo Last Action" Click="UndoLastActionMenuItem_Click" />
             <Separator />
             <MenuItem x:Name="DesktopNewFenceMenuItem" Header="New Fence" Click="NewFenceMenuItem_Click" />
             <MenuItem x:Name="DesktopNewFolderPortalMenuItem" Header="New Folder Portal..." Click="NewFolderPortalMenuItem_Click" />
@@ -31,6 +32,7 @@
                 <MenuItem x:Name="DesktopRowsLayoutMenuItem" Header="Rows" Tag="Rows" Click="AutoLayoutMenuItem_Click" />
             </MenuItem>
             <MenuItem x:Name="DesktopRefreshAllMenuItem" Header="Refresh All" Click="RefreshAllMenuItem_Click" />
+            <MenuItem x:Name="DesktopSwapMonitorsMenuItem" Header="Swap monitor contents" Click="SwapMonitorContentsMenuItem_Click" />
             <Separator />
             <MenuItem x:Name="DesktopCreateCategoryFencesMenuItem" Header="Create Category Fences" Click="CreateCategoryFencesMenuItem_Click" />
             <MenuItem x:Name="DesktopOrganizeMenuItem" Header="Organize Desktop by Type..." Click="OrganizeDesktopMenuItem_Click" />
@@ -53,10 +55,88 @@
         </ContextMenu>
     </Window.ContextMenu>
 
-    <Canvas x:Name="Workspace"
-            Background="Transparent"
-            AllowDrop="True"
-            DragOver="Workspace_DragOver"
-            Drop="Workspace_Drop"
-            MouseLeftButtonDown="Workspace_MouseLeftButtonDown" />
+    <Grid>
+        <Border x:Name="PeekBackdrop"
+                Background="#A0121822"
+                Opacity="0"
+                Visibility="Collapsed"
+                MouseLeftButtonDown="PeekBackdrop_MouseLeftButtonDown" />
+        <Canvas x:Name="Workspace"
+                Background="Transparent"
+                AllowDrop="True"
+                DragOver="Workspace_DragOver"
+                DragLeave="Workspace_DragLeave"
+                Drop="Workspace_Drop"
+                MouseLeftButtonDown="Workspace_MouseLeftButtonDown" />
+        <Border x:Name="FenceSelectionOverlay"
+                Visibility="Collapsed"
+                HorizontalAlignment="Left"
+                VerticalAlignment="Top"
+                Background="#304B9BFF"
+                BorderBrush="#FF75B6FF"
+                BorderThickness="2"
+                CornerRadius="8"
+                IsHitTestVisible="False" />
+        <Border x:Name="DragHintBorder"
+                Visibility="Collapsed"
+                HorizontalAlignment="Left"
+                VerticalAlignment="Top"
+                Background="Transparent"
+                BorderBrush="Transparent"
+                BorderThickness="0"
+                CornerRadius="2"
+                Padding="2,1"
+                IsHitTestVisible="False"
+                SnapsToDevicePixels="True"
+                UseLayoutRounding="True"
+                Panel.ZIndex="10000">
+            <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                <Image x:Name="DragHintIcon"
+                       Width="30"
+                       Height="30"
+                       Margin="0,0,5,0"
+                       Stretch="Uniform"
+                       Opacity="0.82"
+                       RenderOptions.BitmapScalingMode="HighQuality"
+                       SnapsToDevicePixels="True"
+                       Visibility="Collapsed" />
+                <TextBlock x:Name="DragHintText"
+                           Foreground="#F2FFFFFF"
+                           FontFamily="Segoe UI"
+                           FontSize="13"
+                           FontWeight="SemiBold"
+                           TextOptions.TextFormattingMode="Display"
+                           TextOptions.TextRenderingMode="Grayscale"
+                           VerticalAlignment="Center"
+                           Text="→ Move to target" />
+            </StackPanel>
+        </Border>
+        <Border x:Name="TransferProgressBorder"
+                Visibility="Collapsed" HorizontalAlignment="Right" VerticalAlignment="Bottom"
+                Margin="0,0,24,24" Padding="14,12" Width="460"
+                Background="#F2212832" BorderBrush="#667BC8FF" BorderThickness="1"
+                CornerRadius="8" Panel.ZIndex="10001">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                </Grid.RowDefinitions>
+                <TextBlock x:Name="TransferProgressTitle" Foreground="White" FontWeight="SemiBold" Text="正在处理文件…" />
+                <Button x:Name="CancelTransferButton" Grid.Column="1" Grid.RowSpan="2" Margin="12,0,0,0"
+                        Padding="10,4" Content="安全取消" Click="CancelTransferButton_Click" />
+                <Button x:Name="OpenTransferTargetButton" Grid.Column="2" Grid.RowSpan="2" Margin="8,0,0,0"
+                        Padding="10,4" Content="打开目标" Visibility="Collapsed" Click="OpenTransferTargetButton_Click" />
+                <TextBlock x:Name="TransferProgressDetail" Grid.Row="1" Margin="0,4,0,7"
+                           Foreground="#CCDDE6EE" TextTrimming="CharacterEllipsis" />
+                <ProgressBar x:Name="TransferProgressBar" Grid.Row="2" Grid.ColumnSpan="3"
+                             Height="5" Minimum="0" Maximum="1" Value="0" />
+            </Grid>
+        </Border>
+    </Grid>
 </Window>

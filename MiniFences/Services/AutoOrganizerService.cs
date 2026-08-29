@@ -334,6 +334,7 @@ public sealed class AutoOrganizerService
 
     public static bool RuleMatches(AutoOrganizeRule rule, string path)
     {
+        if (!HasEffectiveCriteria(rule)) return false;
         var isFolder = Directory.Exists(path);
         if (rule.FoldersOnly && !isFolder) return false;
         if (!string.IsNullOrWhiteSpace(rule.NamePattern))
@@ -341,6 +342,15 @@ public sealed class AutoOrganizerService
             var name = Path.GetFileName(path);
             var patterns = rule.NamePattern.Split([';', ','], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
             if (!patterns.Any(pattern => WildcardMatch(name, pattern))) return false;
+        }
+
+        if (!string.IsNullOrWhiteSpace(rule.ExactNames))
+        {
+            var fileName = Path.GetFileName(path);
+            var nameWithoutExtension = Path.GetFileNameWithoutExtension(path);
+            var names = rule.ExactNames.Split([';', ','], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+            if (!names.Any(name => string.Equals(name, fileName, StringComparison.OrdinalIgnoreCase) ||
+                                   string.Equals(name, nameWithoutExtension, StringComparison.OrdinalIgnoreCase))) return false;
         }
 
         if (!string.IsNullOrWhiteSpace(rule.Extensions))
@@ -359,8 +369,26 @@ public sealed class AutoOrganizerService
             if (rule.MaximumSizeMb.HasValue && sizeMb > rule.MaximumSizeMb.Value) return false;
         }
 
+        if (!string.IsNullOrWhiteSpace(rule.ShortcutTargetPattern))
+        {
+            if (isFolder) return false;
+            var target = GetShortcutLaunchDescriptor(path);
+            if (string.IsNullOrWhiteSpace(target)) return false;
+            var patterns = rule.ShortcutTargetPattern.Split([';', ','], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+            if (!patterns.Any(pattern => WildcardMatch(target, pattern))) return false;
+        }
+
         return true;
     }
+
+    internal static bool HasEffectiveCriteria(AutoOrganizeRule rule) =>
+        rule.FoldersOnly ||
+        !string.IsNullOrWhiteSpace(rule.NamePattern) ||
+        !string.IsNullOrWhiteSpace(rule.ExactNames) ||
+        !string.IsNullOrWhiteSpace(rule.Extensions) ||
+        !string.IsNullOrWhiteSpace(rule.ShortcutTargetPattern) ||
+        rule.MinimumSizeMb.HasValue ||
+        rule.MaximumSizeMb.HasValue;
 
     private static bool WildcardMatch(string value, string pattern)
     {
@@ -399,6 +427,7 @@ public sealed class AutoOrganizerService
         foreach (var fence in config.Fences.Where(fence => !fence.IsDesktopGroup && IsManagedCategoryFolder(fence.FolderPath)).ToList())
         {
             var assignedPaths = new List<string>();
+            var fenceHadError = false;
             if (Directory.Exists(fence.FolderPath))
             {
                 foreach (var sourcePath in Directory.EnumerateFileSystemEntries(fence.FolderPath).ToList())
@@ -406,22 +435,27 @@ public sealed class AutoOrganizerService
                     try
                     {
                         var destinationPath = GetAvailableDestinationPath(sourcePath, _desktopPath);
-                        if (Directory.Exists(sourcePath)) Directory.Move(sourcePath, destinationPath);
-                        else File.Move(sourcePath, destinationPath);
+                        FolderItemService.MoveFileSystemEntrySafely(sourcePath, destinationPath);
                         assignedPaths.Add(destinationPath);
                         restoredItems += 1;
                     }
                     catch (Exception ex)
                     {
+                        fenceHadError = true;
                         errors.Add($"{Path.GetFileName(sourcePath)}: {ex.Message}");
                     }
                 }
             }
 
-            fence.Kind = FenceConfig.DesktopGroupKind;
-            fence.FolderPath = _desktopPath;
-            fence.AssignedPaths = assignedPaths;
-            migratedFences += 1;
+            var hasResidualItems = Directory.Exists(fence.FolderPath) &&
+                                   Directory.EnumerateFileSystemEntries(fence.FolderPath).Any();
+            if (!fenceHadError && !hasResidualItems)
+            {
+                fence.Kind = FenceConfig.DesktopGroupKind;
+                fence.FolderPath = _desktopPath;
+                fence.AssignedPaths = assignedPaths;
+                migratedFences += 1;
+            }
         }
 
         var assigned = config.Fences.Where(fence => fence.IsDesktopGroup)
@@ -555,14 +589,7 @@ public sealed class AutoOrganizerService
                 }
 
                 var destinationPath = GetAvailableDestinationPath(move.SourcePath, move.TargetFolder);
-                if (Directory.Exists(move.SourcePath))
-                {
-                    Directory.Move(move.SourcePath, destinationPath);
-                }
-                else
-                {
-                    File.Move(move.SourcePath, destinationPath);
-                }
+                FolderItemService.MoveFileSystemEntrySafely(move.SourcePath, destinationPath);
 
                 undoEntries.Add(new OrganizationUndoEntry(move.SourcePath, destinationPath));
                 moved += 1;
@@ -661,14 +688,7 @@ public sealed class AutoOrganizerService
                 Directory.CreateDirectory(originalFolder);
                 var isDirectory = Directory.Exists(entry.DestinationPath);
                 var restorePath = GetAvailableRestorePath(entry.SourcePath, isDirectory);
-                if (isDirectory)
-                {
-                    Directory.Move(entry.DestinationPath, restorePath);
-                }
-                else
-                {
-                    File.Move(entry.DestinationPath, restorePath);
-                }
+                FolderItemService.MoveFileSystemEntrySafely(entry.DestinationPath, restorePath);
 
                 moved += 1;
             }
@@ -746,7 +766,7 @@ public sealed class AutoOrganizerService
                descriptor.Contains("epicgames://launch", StringComparison.OrdinalIgnoreCase);
     }
 
-    private static string? GetShortcutLaunchDescriptor(string path)
+    internal static string? GetShortcutLaunchDescriptor(string path)
     {
         try
         {

@@ -15,6 +15,8 @@ public sealed class ConfigService
 
     public string SnapshotDirectory => Path.Combine(Path.GetDirectoryName(ConfigPath) ?? AppContext.BaseDirectory, "snapshots");
     public string NamedLayoutDirectory => Path.Combine(Path.GetDirectoryName(ConfigPath) ?? AppContext.BaseDirectory, "layouts");
+    public string AutomaticBackupDirectory => Path.Combine(
+        Path.GetDirectoryName(ConfigPath) ?? AppContext.BaseDirectory, "config-backups");
 
     public ConfigService(string? configPath = null)
     {
@@ -30,9 +32,12 @@ public sealed class ConfigService
         {
             if (!File.Exists(ConfigPath))
             {
-                return File.Exists(backupPath)
-                    ? LoadFromFile(backupPath)
-                    : CreateDefaultAppConfig();
+                if (File.Exists(backupPath)) return LoadFromFile(backupPath);
+                foreach (var automaticBackup in GetAutomaticBackupPaths())
+                    try { return LoadFromFile(automaticBackup); }
+                    catch (Exception backupEx)
+                    { AppLogger.LogException($"Failed to load automatic config backup from {automaticBackup}", backupEx); }
+                return CreateDefaultAppConfig();
             }
 
             return LoadFromFile(ConfigPath);
@@ -50,6 +55,19 @@ public sealed class ConfigService
                 catch (Exception backupEx)
                 {
                     AppLogger.LogException($"Failed to load backup config from {backupPath}", backupEx);
+                }
+            }
+
+            foreach (var automaticBackup in GetAutomaticBackupPaths())
+            {
+                try
+                {
+                    AppLogger.Log($"Trying automatic config backup: {automaticBackup}");
+                    return LoadFromFile(automaticBackup);
+                }
+                catch (Exception backupEx)
+                {
+                    AppLogger.LogException($"Failed to load automatic config backup from {automaticBackup}", backupEx);
                 }
             }
 
@@ -74,6 +92,7 @@ public sealed class ConfigService
 
             if (File.Exists(ConfigPath))
             {
+                TryArchiveExistingConfig(json);
                 File.Replace(tempPath, ConfigPath, backupPath, ignoreMetadataErrors: true);
             }
             else
@@ -100,6 +119,33 @@ public sealed class ConfigService
             throw;
         }
     }
+
+    private void TryArchiveExistingConfig(string nextJson)
+    {
+        try
+        {
+            var currentJson = File.ReadAllText(ConfigPath);
+            if (string.Equals(currentJson, nextJson, StringComparison.Ordinal)) return;
+            using var parsed = JsonDocument.Parse(currentJson);
+            Directory.CreateDirectory(AutomaticBackupDirectory);
+            var path = Path.Combine(AutomaticBackupDirectory,
+                $"config-{DateTime.UtcNow:yyyyMMdd-HHmmssfff}-{Guid.NewGuid():N}.json");
+            File.Copy(ConfigPath, path, overwrite: false);
+            foreach (var old in GetAutomaticBackupPaths().Skip(20))
+                try { File.Delete(old); } catch (Exception ex) { AppLogger.LogException("Failed to prune config backup.", ex); }
+        }
+        catch (Exception ex)
+        {
+            // A backup failure must not prevent the atomic primary save.
+            AppLogger.LogException("Could not create automatic config backup.", ex);
+        }
+    }
+
+    internal IReadOnlyList<string> GetAutomaticBackupPaths() =>
+        Directory.Exists(AutomaticBackupDirectory)
+            ? Directory.EnumerateFiles(AutomaticBackupDirectory, "config-*.json")
+                .OrderByDescending(File.GetLastWriteTimeUtc).ToArray()
+            : [];
 
     public string SaveSnapshot(AppConfig config)
     {
@@ -197,6 +243,8 @@ public sealed class ConfigService
         return Normalize(current);
     }
 
+    public LayoutDocument CaptureLayout(AppConfig config) => CreateLayout(config);
+
     private string GetNamedLayoutPath(string name) => Path.Combine(NamedLayoutDirectory, $"{NormalizeLayoutName(name)}.json");
 
     private IReadOnlyList<LayoutEntry> GetLayoutEntries(string directory, string pattern, bool named)
@@ -273,6 +321,9 @@ public sealed class ConfigService
         Kind = fence.Kind,
         AssignedPaths = fence.AssignedPaths.ToList(),
         PageIndex = fence.PageIndex,
+        ShowOnAllPages = fence.ShowOnAllPages,
+        ContentLinkId = fence.ContentLinkId,
+        SynchronizeLinkedLayout = fence.SynchronizeLinkedLayout,
         Left = fence.Left,
         Top = fence.Top,
         Width = fence.Width,
@@ -290,7 +341,14 @@ public sealed class ConfigService
         IsCollapsed = fence.IsCollapsed,
         EnableHoverExpand = fence.EnableHoverExpand,
         EdgeDock = fence.EdgeDock,
-        TabGroupId = fence.TabGroupId
+        TabGroupId = fence.TabGroupId,
+        PortalCurrentPath = fence.PortalCurrentPath,
+        PortalViewMode = fence.PortalViewMode,
+        PortalIconSize = fence.PortalIconSize,
+        PortalItemSpacing = fence.PortalItemSpacing,
+        ListShowType = fence.ListShowType,
+        ListShowSize = fence.ListShowSize,
+        ListShowTime = fence.ListShowTime
     };
 
     private static void CopyAppearance(FenceConfig source, FenceConfig target)
@@ -484,12 +542,20 @@ public sealed class ConfigService
             }
         }
 
-        var maxFencePage = Math.Max(0, config.Fences.Max(fence => fence.PageIndex));
+        var pagedFences = config.Fences.Where(fence => !fence.ShowOnAllPages).ToArray();
+        var maxFencePage = pagedFences.Length == 0 ? 0 : Math.Max(0, pagedFences.Max(fence => fence.PageIndex));
         config.PageCount = Math.Max(1, Math.Max(config.PageCount, Math.Max(maxFencePage, config.CurrentPage) + 1));
         config.CurrentPage = Math.Clamp(config.CurrentPage, 0, config.PageCount - 1);
+        config.GridSize = Math.Clamp(config.GridSize <= 0 ? 16 : config.GridSize, 1, 256);
+        config.DirectPageHotkeys ??= [];
+        config.DirectPageHotkeys = Enumerable.Range(0, 12)
+            .Select(index => index < config.DirectPageHotkeys.Count
+                ? config.DirectPageHotkeys[index]?.Trim() ?? ""
+                : $"F{index + 1}")
+            .ToList();
         config.Language = LocalizationService.NormalizeLanguage(config.Language);
-        config.PreviousPageHotkey = string.IsNullOrWhiteSpace(config.PreviousPageHotkey) ? "Ctrl+Alt+Left" : config.PreviousPageHotkey;
-        config.NextPageHotkey = string.IsNullOrWhiteSpace(config.NextPageHotkey) ? "Ctrl+Alt+Right" : config.NextPageHotkey;
+        config.PreviousPageHotkey = string.IsNullOrWhiteSpace(config.PreviousPageHotkey) ? "Ctrl+Alt+MouseLeft" : config.PreviousPageHotkey;
+        config.NextPageHotkey = string.IsNullOrWhiteSpace(config.NextPageHotkey) ? "Ctrl+Alt+MouseRight" : config.NextPageHotkey;
         config.ToggleTopmostHotkey = string.IsNullOrWhiteSpace(config.ToggleTopmostHotkey) ||
                                      string.Equals(config.ToggleTopmostHotkey, "Win+Space", StringComparison.OrdinalIgnoreCase)
             ? "Ctrl+Alt+Space"
@@ -552,7 +618,17 @@ public sealed class ConfigService
             ? FenceConfig.DesktopGroupKind
             : FenceConfig.FolderPortalKind;
         config.AssignedPaths ??= [];
+        if (config.Kind == FenceConfig.FolderPortalKind && FolderItemService.IsDesktopRootPath(config.FolderPath))
+        {
+            // A Folder Portal over Desktop enumerates every desktop entry while
+            // Desktop Groups render the same entries by assignment, producing
+            // duplicate icons. Desktop roots must always use metadata grouping.
+            config.Kind = FenceConfig.DesktopGroupKind;
+            config.AssignedPaths.Clear();
+            config.PortalCurrentPath = null;
+        }
         config.AssignedPaths = config.AssignedPaths.Where(path => !string.IsNullOrWhiteSpace(path)).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        config.ContentLinkId = string.IsNullOrWhiteSpace(config.ContentLinkId) ? null : config.ContentLinkId.Trim();
         config.PageIndex = Math.Max(0, config.PageIndex);
         config.Width = Math.Max(240, config.Width);
         config.Height = Math.Max(180, config.Height);
@@ -561,6 +637,9 @@ public sealed class ConfigService
             : Math.Max(180, config.ExpandedHeight ?? config.Height);
         config.BackgroundColor = string.IsNullOrWhiteSpace(config.BackgroundColor) ? DefaultBackgroundColor : config.BackgroundColor;
         config.HeaderColor = string.IsNullOrWhiteSpace(config.HeaderColor) ? DefaultHeaderColor : config.HeaderColor;
+        config.HeaderGradientColor = string.IsNullOrWhiteSpace(config.HeaderGradientColor)
+            ? DefaultHeaderGradientColor
+            : config.HeaderGradientColor;
         config.Opacity = double.IsNaN(config.Opacity) || double.IsInfinity(config.Opacity)
             ? 1.0
             : Math.Clamp(config.Opacity, 0.0, 1.0);
@@ -568,6 +647,9 @@ public sealed class ConfigService
         config.SortMode = config.SortMode is "Name" or "Size" or "ItemType" or "Modified" or "Created" or "Category"
             ? config.SortMode
             : "None";
+        config.PortalViewMode = string.Equals(config.PortalViewMode, "List", StringComparison.OrdinalIgnoreCase)
+            ? "List"
+            : "Icons";
         if (double.IsNaN(config.Left) || double.IsInfinity(config.Left)) config.Left = 80 + index * 32;
         if (double.IsNaN(config.Top) || double.IsInfinity(config.Top)) config.Top = 80 + index * 32;
         return config;
@@ -575,6 +657,7 @@ public sealed class ConfigService
 
     private const string DefaultBackgroundColor = "#DD20242A";
     private const string DefaultHeaderColor = "#CC3F7FA8";
+    private const string DefaultHeaderGradientColor = "#CC8E5BB7";
     private const double DefaultWorkspaceWidth = 1280;
     private const double DefaultWorkspaceHeight = 720;
     private const double DefaultStarterFenceWidth = 240;

@@ -53,7 +53,8 @@ public sealed class ShellContextMenuService
             menu = CreatePopupMenu();
             if (menu == IntPtr.Zero) throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
             contextMenu.QueryContextMenu(menu, 0, CommandFirst, CommandLast, CmfNormal | CmfExplore | CmfCanRename);
-            EnsureHostRenameCommand(menu, contextMenu);
+            if (!FolderItemService.IsShellNamespacePath(rightClickedPath))
+                EnsureHostRenameCommand(menu, contextMenu);
 
             try { contextMenu3 = contextMenu as IContextMenu3; } catch { contextMenu3 = null; }
             if (contextMenu3 == null)
@@ -193,6 +194,13 @@ public sealed class ShellContextMenuService
 
     internal static string[] SelectPathsForContextMenu(string rightClickedPath, IEnumerable<string> selectedPaths)
     {
+        if (FolderItemService.IsShellNamespacePath(rightClickedPath))
+        {
+            // Virtual desktop objects use Shell parsing names, not file-system
+            // paths. SHParseDisplayName accepts these names directly.
+            return [rightClickedPath];
+        }
+
         if (string.IsNullOrWhiteSpace(rightClickedPath) ||
             (!File.Exists(rightClickedPath) && !Directory.Exists(rightClickedPath)))
         {

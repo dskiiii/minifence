@@ -19,7 +19,7 @@ public static class PageService
             return false;
         }
 
-        if (config.Fences.Any(fence => fence.PageIndex == pageIndex))
+        if (config.Fences.Any(fence => !fence.ShowOnAllPages && fence.PageIndex == pageIndex))
         {
             error = "Only empty pages can be deleted. Move or delete the Fences on this page first.";
             return false;
@@ -31,6 +31,8 @@ public static class PageService
         }
 
         config.PageCount = Math.Max(1, pageCount - 1);
+        foreach (var fence in config.Fences.Where(fence => fence.ShowOnAllPages))
+            fence.PageIndex = Math.Clamp(fence.PageIndex, 0, config.PageCount - 1);
         config.CurrentPage = Math.Clamp(config.CurrentPage >= pageIndex ? config.CurrentPage - 1 : config.CurrentPage, 0, config.PageCount - 1);
         error = null;
         return true;
@@ -38,9 +40,10 @@ public static class PageService
 
     public static int GetPageCount(AppConfig config)
     {
-        var maxFencePage = config.Fences.Count == 0
+        var pagedFences = config.Fences.Where(fence => !fence.ShowOnAllPages).ToArray();
+        var maxFencePage = pagedFences.Length == 0
             ? 0
-            : config.Fences.Max(fence => Math.Max(0, fence.PageIndex));
+            : pagedFences.Max(fence => Math.Max(0, fence.PageIndex));
         config.PageCount = Math.Max(1, Math.Max(config.PageCount, Math.Max(maxFencePage, config.CurrentPage) + 1));
         return config.PageCount;
     }

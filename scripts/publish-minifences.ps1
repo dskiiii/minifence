@@ -83,6 +83,15 @@ foreach ($release in $packages) {
   }
 
   Get-ChildItem $outputPath -Filter "*.pdb" -File | Remove-Item -Force
+  $relativeRoot = $outputPath.TrimEnd('\') + '\'
+  $manifestFiles = Get-ChildItem -LiteralPath $outputPath -File -Recurse |
+    ForEach-Object { $_.FullName.Substring($relativeRoot.Length).Replace('\', '/') } |
+    Sort-Object
+  $manifest = [ordered]@{ version = $Version; files = @($manifestFiles) }
+  # Windows PowerShell 5.1 does not expose the utf8NoBOM encoding name.
+  # A UTF-8 BOM is valid JSON and keeps the release script usable on the
+  # stock shell shipped with Windows 10/11.
+  $manifest | ConvertTo-Json -Depth 3 | Set-Content -LiteralPath (Join-Path $outputPath ".minifences-manifest.json") -Encoding UTF8
   Compress-Archive -Path (Join-Path $outputPath "*") -DestinationPath $archivePath -CompressionLevel Optimal
   $archiveHash = (Get-FileHash -LiteralPath $archivePath -Algorithm SHA256).Hash
   Set-Content -LiteralPath "$archivePath.sha256" -Value "$archiveHash  $([IO.Path]::GetFileName($archivePath))" -Encoding ascii
