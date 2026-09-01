@@ -2482,8 +2482,8 @@ static void TestFenceControlBindingAndLayout(string root)
             Assert(desktopGroup.CompactTabNavigationExcludesRollupForTesting,
                 "Rapid clicks on compact tab arrows and their page indicator must never be interpreted as title-bar roll-up double-clicks.");
             desktopGroup.SetTabStatus(3, 1, ["One", "Two", "Three"], useTabStrip: true, equalTabWidths: false);
-            Assert(desktopGroup.TabStripExcludesRollupForTesting,
-                "Rapid clicks on full-width tabs must never be interpreted as title-bar roll-up double-clicks.");
+            Assert(desktopGroup.TabStripHandlesRollupForTesting,
+                "Double-clicking a full-width title tab should use the configured title-bar roll-up behavior.");
             Assert(desktopGroup.AreTabTitlesCenteredForTesting,
                 "Tab titles should fill their tab and center text horizontally.");
             Assert(desktopGroup.TabColumnWidthsForTesting.Count == 4 &&

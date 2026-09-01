@@ -167,9 +167,9 @@ public partial class FenceControl : System.Windows.Controls.UserControl
     internal bool CompactTabNavigationExcludesRollupForTesting =>
         TabNavigationPanel.Children.OfType<DependencyObject>()
             .All(IsTitleBarInteractiveSource);
-    internal bool TabStripExcludesRollupForTesting =>
+    internal bool TabStripHandlesRollupForTesting =>
         TabStripPanel.Children.OfType<DependencyObject>()
-            .All(IsTitleBarInteractiveSource);
+            .All(ShouldHandleTitleBarDoubleClick);
     internal int TabPickerItemCountForTesting => BuildTabPickerMenu().Items.Count;
     internal Window CreateTabDragPreviewForTesting() => CreateTabDragPreview(0);
     internal bool HasFolderWatcherForTesting => _folderWatcher != null;
@@ -1720,21 +1720,29 @@ public partial class FenceControl : System.Windows.Controls.UserControl
 
     private void TitleBar_PreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
     {
-        if (e.OriginalSource is not DependencyObject source ||
-            IsTitleBarInteractiveSource(source))
+        if (e.OriginalSource is not DependencyObject source)
         {
             return;
         }
 
         // WPF supplies the native Windows double-click count. Keeping this out of
         // the drag path prevents a moved title bar from being mistaken for a click.
-        if (e.ClickCount == 2 && RollupEnabled && DoubleClickRollupEnabled)
+        // Full-width title tabs remain selectable on a single click, but a double-click
+        // on their labels follows the same roll-up behavior as the rest of the title bar.
+        if (e.ClickCount == 2 && RollupEnabled && DoubleClickRollupEnabled &&
+            ShouldHandleTitleBarDoubleClick(source))
         {
             _isDragging = false;
             _isTitlePressPending = false;
             TitleBar.ReleaseMouseCapture();
             ToggleCollapsed();
             e.Handled = true;
+            return;
+        }
+
+        if (IsTitleBarInteractiveSource(source))
+        {
+            return;
         }
     }
 
@@ -2034,6 +2042,10 @@ public partial class FenceControl : System.Windows.Controls.UserControl
     private bool IsTitleBarInteractiveSource(DependencyObject source) =>
         FindVisualParent<System.Windows.Controls.Button>(source) != null ||
         IsVisualDescendantOf(source, TabNavigationPanel) ||
+        IsVisualDescendantOf(source, TabStripPanel);
+
+    private bool ShouldHandleTitleBarDoubleClick(DependencyObject source) =>
+        !IsTitleBarInteractiveSource(source) ||
         IsVisualDescendantOf(source, TabStripPanel);
 
     internal static string GetItemPresentationTag(bool listMode, bool isSelected, int selectedCount) =>
