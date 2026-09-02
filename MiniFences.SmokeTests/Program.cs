@@ -137,6 +137,33 @@ static void TestGitHubUpdateParsing()
     Assert(GitHubUpdateService.NormalizeSha256("sha256:" + uppercaseHash) == new string('a', 64) &&
            GitHubUpdateService.NormalizeSha256("sha256:ABCDEF") == "",
         "GitHub release digests must be a complete 64-character SHA-256 value.");
+
+    const string headedNotes = """
+    ## 中文
+
+    修复中文更新说明。
+
+    ## English
+
+    Fixed the English update notes.
+    """;
+    Assert(GitHubUpdateService.LocalizeReleaseNotes(headedNotes, chinese: true) == "修复中文更新说明。" &&
+           GitHubUpdateService.LocalizeReleaseNotes(headedNotes, chinese: false) == "Fixed the English update notes.",
+        "Update notes with language headings must follow the configured MiniFences language.");
+
+    const string legacyNotes = """
+    MiniFences 中文正式版说明。
+
+    ---
+
+    MiniFences stable release notes for English users.
+    """;
+    Assert(GitHubUpdateService.LocalizeReleaseNotes(legacyNotes, chinese: true) == "MiniFences 中文正式版说明。" &&
+           GitHubUpdateService.LocalizeReleaseNotes(legacyNotes, chinese: false) == "MiniFences stable release notes for English users.",
+        "Legacy bilingual update notes must be split at their Markdown divider.");
+    Assert(GitHubUpdateService.LocalizeReleaseNotes("Security and reliability fixes.", chinese: true) ==
+           "Security and reliability fixes.",
+        "Unsectioned release notes must remain available instead of being discarded.");
 }
 
 static void TestUpdateInstallerSafety()

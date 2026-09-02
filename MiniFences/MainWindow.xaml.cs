@@ -3088,9 +3088,11 @@ public partial class MainWindow : Window
             }
 
             var update = result.Update;
-            var notes = string.IsNullOrWhiteSpace(update.ReleaseNotes)
+            var localizedReleaseNotes = GitHubUpdateService.LocalizeReleaseNotes(
+                update.ReleaseNotes, _loc.IsChinese);
+            var notes = string.IsNullOrWhiteSpace(localizedReleaseNotes)
                 ? ""
-                : $"\n\n{update.ReleaseNotes.Trim()[..Math.Min(1000, update.ReleaseNotes.Trim().Length)]}";
+                : $"\n\n{localizedReleaseNotes[..Math.Min(1000, localizedReleaseNotes.Length)]}";
             var prompt = _loc.IsChinese
                 ? $"发现 MiniFences 新版本 {update.Version}。\n\n现在下载并自动更新吗？{notes}"
                 : $"MiniFences {update.Version} is available.\n\nDownload and install it now?{notes}";

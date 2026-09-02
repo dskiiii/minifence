@@ -127,6 +127,74 @@ public sealed class GitHubUpdateService
         return result.Length == 64 && result.All(Uri.IsHexDigit) ? result : "";
     }
 
+    internal static string LocalizeReleaseNotes(string? releaseNotes, bool chinese)
+    {
+        if (string.IsNullOrWhiteSpace(releaseNotes)) return "";
+        var normalized = releaseNotes.Replace("\r\n", "\n").Replace('\r', '\n').Trim();
+        var lines = normalized.Split('\n');
+        var desiredLanguage = chinese ? "zh" : "en";
+        string? activeLanguage = null;
+        var foundLanguageHeading = false;
+        var selectedLines = new List<string>();
+
+        foreach (var line in lines)
+        {
+            var headingLanguage = GetReleaseNotesHeadingLanguage(line);
+            if (headingLanguage is not null)
+            {
+                foundLanguageHeading = true;
+                activeLanguage = headingLanguage;
+                continue;
+            }
+
+            if (string.Equals(activeLanguage, desiredLanguage, StringComparison.Ordinal))
+                selectedLines.Add(line);
+        }
+
+        if (foundLanguageHeading)
+            return TrimReleaseNoteLines(selectedLines);
+
+        // Releases published before language headings were introduced used a
+        // Markdown horizontal rule between the Chinese and English sections.
+        var dividerIndex = Array.FindIndex(lines, line => string.Equals(line.Trim(), "---", StringComparison.Ordinal));
+        if (dividerIndex > 0 && dividerIndex < lines.Length - 1)
+        {
+            var beforeDivider = TrimReleaseNoteLines(lines.Take(dividerIndex));
+            var afterDivider = TrimReleaseNoteLines(lines.Skip(dividerIndex + 1));
+            if (ContainsCjkText(beforeDivider) && ContainsSubstantialLatinText(afterDivider))
+                return chinese ? beforeDivider : afterDivider;
+        }
+
+        return normalized;
+    }
+
+    private static string? GetReleaseNotesHeadingLanguage(string line)
+    {
+        var heading = line.Trim();
+        if (!heading.StartsWith('#')) return null;
+        heading = heading.TrimStart('#').Trim();
+        if (heading.Equals("中文", StringComparison.OrdinalIgnoreCase) ||
+            heading.Equals("简体中文", StringComparison.OrdinalIgnoreCase) ||
+            heading.Equals("Chinese", StringComparison.OrdinalIgnoreCase)) return "zh";
+        if (heading.Equals("英文", StringComparison.OrdinalIgnoreCase) ||
+            heading.Equals("English", StringComparison.OrdinalIgnoreCase)) return "en";
+        return null;
+    }
+
+    private static string TrimReleaseNoteLines(IEnumerable<string> lines)
+    {
+        var values = lines.ToList();
+        while (values.Count > 0 && string.IsNullOrWhiteSpace(values[0])) values.RemoveAt(0);
+        while (values.Count > 0 && string.IsNullOrWhiteSpace(values[^1])) values.RemoveAt(values.Count - 1);
+        return string.Join(Environment.NewLine, values).Trim();
+    }
+
+    private static bool ContainsCjkText(string value) =>
+        value.Any(character => character is >= '\u3400' and <= '\u9fff');
+
+    private static bool ContainsSubstantialLatinText(string value) =>
+        value.Count(character => character <= 127 && char.IsLetter(character)) >= 20;
+
     private static GitHubUpdateInfo? ParseRelease(JsonElement root, Version currentVersion)
     {
         if (root.ValueKind != JsonValueKind.Object ||
