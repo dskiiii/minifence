@@ -13,6 +13,30 @@ Environment.SetEnvironmentVariable("MINIFENCES_LOG_PATH", Path.Combine(root, "lo
 
 try
 {
+    if (args.Contains("--shell-desktop-check"))
+    {
+        Exception? failure = null;
+        var probe = new Thread(() =>
+        {
+            try
+            {
+                Assert(ShellDesktopView.TryGetVisible(out var visible), "Desktop Shell visibility must be readable.");
+                for (var attempt = 0; attempt < 3; attempt++)
+                {
+                    Assert(ShellDesktopView.TrySetVisible(visible), "Repeated Shell visibility updates must succeed.");
+                    Assert(ShellDesktopView.TryGetVisible(out var current) && current == visible,
+                        "Repeated Shell updates must preserve desktop visibility.");
+                }
+                Console.WriteLine($"Desktop Shell COM check passed. IconsVisible={visible}");
+            }
+            catch (Exception ex) { failure = ex; }
+        });
+        probe.SetApartmentState(ApartmentState.STA);
+        probe.Start();
+        probe.Join();
+        if (failure != null) throw failure;
+        return 0;
+    }
     Assert(AppLogger.LogPath.StartsWith(root, StringComparison.OrdinalIgnoreCase),
         "Smoke-test diagnostics must be isolated from the user's production log.");
     TestConfigRoundTrip(root);
@@ -1423,6 +1447,29 @@ static void TestTabDropAcceptance()
 
 static void TestTabGroupPresentationState()
 {
+    var lockedTarget = new FenceConfig { TabGroupId = "locked", IsLocked = true };
+    var lockedSibling = new FenceConfig { TabGroupId = "locked", IsLocked = true };
+    var incoming = new FenceConfig { TabGroupId = "locked", IsLocked = false,
+        PreTabWidth = 280, PreTabHeight = 320 };
+    MainWindow.SynchronizeTabGroupPresentationState(lockedTarget, [lockedTarget, lockedSibling, incoming]);
+    Assert(incoming.IsLocked && lockedSibling.IsLocked,
+        "An unlocked tab merged into a locked target must inherit the target lock.");
+    incoming.IsCollapsed = true;
+    incoming.EdgeDock = "Top";
+    MainWindow.PrepareDetachedFence(incoming);
+    Assert(!incoming.IsLocked && incoming.TabGroupId == null && !incoming.IsCollapsed &&
+        incoming.EdgeDock == null && incoming.Width == 280 && incoming.Height == 320,
+        "Both drag and menu detach must produce an unlocked, expanded standalone Fence.");
+    Assert(lockedTarget.IsLocked && lockedSibling.IsLocked,
+        "Detaching a tab must leave the remaining group's lock unchanged.");
+    incoming.TabGroupId = "locked";
+    MainWindow.SynchronizeTabGroupPresentationState(lockedTarget, [lockedTarget, lockedSibling, incoming]);
+    Assert(incoming.IsLocked, "Reattaching a detached tab must restore the target group's lock.");
+    lockedSibling.IsLocked = false;
+    MainWindow.SynchronizeTabGroupPresentationState(lockedSibling, [lockedTarget, lockedSibling, incoming]);
+    Assert(!lockedTarget.IsLocked && !incoming.IsLocked,
+        "Unlocking any active tab must unlock the complete group before switching tabs.");
+
     var activeTab = new FenceConfig
     {
         Left = 120,
@@ -2506,6 +2553,18 @@ static void TestFenceControlBindingAndLayout(string root)
             Assert(desktopGroup.IsTabNavigationVisibleForTesting, "Stacked Fences should expose direct previous/next tab navigation.");
             Assert(desktopGroup.TabPickerItemCountForTesting == 3,
                 "Clicking the compact page indicator must offer every tab for direct selection.");
+            var originalGroupId = desktopGroupConfig.TabGroupId;
+            desktopGroupConfig.TabGroupId = "compact-detach-test";
+            var detachRequests = 0;
+            desktopGroup.UnstackRequested += (_, _) => detachRequests++;
+            var picker = desktopGroup.BuildTabPickerMenuForTesting();
+            var detachCommand = picker.Items.OfType<System.Windows.Controls.MenuItem>().Single(item => !item.IsCheckable);
+            detachCommand.RaiseEvent(new System.Windows.RoutedEventArgs(System.Windows.Controls.MenuItem.ClickEvent));
+            Assert(detachRequests == 1, "Compact picker detach must invoke the active Fence's unstack action exactly once.");
+            desktopGroupConfig.TabGroupId = null;
+            Assert(desktopGroup.BuildTabPickerMenuForTesting().Items.OfType<System.Windows.Controls.MenuItem>().All(item => item.IsCheckable),
+                "Standalone Fences must not offer a detach action.");
+            desktopGroupConfig.TabGroupId = originalGroupId;
             Assert(desktopGroup.CompactTabNavigationExcludesRollupForTesting,
                 "Rapid clicks on compact tab arrows and their page indicator must never be interpreted as title-bar roll-up double-clicks.");
             desktopGroup.SetTabStatus(3, 1, ["One", "Two", "Three"], useTabStrip: true, equalTabWidths: false);

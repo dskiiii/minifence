@@ -170,7 +170,8 @@ public partial class FenceControl : System.Windows.Controls.UserControl
     internal bool TabStripHandlesRollupForTesting =>
         TabStripPanel.Children.OfType<DependencyObject>()
             .All(ShouldHandleTitleBarDoubleClick);
-    internal int TabPickerItemCountForTesting => BuildTabPickerMenu().Items.Count;
+    internal int TabPickerItemCountForTesting => BuildTabPickerMenu().Items.OfType<MenuItem>().Count(item => item.IsCheckable);
+    internal ContextMenu BuildTabPickerMenuForTesting() => BuildTabPickerMenu();
     internal Window CreateTabDragPreviewForTesting() => CreateTabDragPreview(0);
     internal bool HasFolderWatcherForTesting => _folderWatcher != null;
     internal IReadOnlyList<GridLength> TabColumnWidthsForTesting =>
@@ -4261,6 +4262,13 @@ public partial class FenceControl : System.Windows.Controls.UserControl
             };
             item.Click += (_, _) => TabSelectedRequested?.Invoke(selectedIndex);
             menu.Items.Add(item);
+        }
+        if (!string.IsNullOrWhiteSpace(Config.TabGroupId) && _tabStripTitles.Count > 1)
+        {
+            menu.Items.Add(new Separator());
+            var detach = new MenuItem { Header = _loc.T("RemoveFromTabStack") };
+            detach.Click += UnstackTabMenuItem_Click;
+            menu.Items.Add(detach);
         }
         return menu;
     }

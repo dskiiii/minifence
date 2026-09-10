@@ -8,18 +8,27 @@ public sealed class DesktopIconLayoutService
 {
     public bool IsVisible()
     {
-        return FindDesktopListViews().Any(IsWindowVisible);
+        return ShellDesktopView.TryGetVisible(out var visible)
+            ? visible
+            : FindDesktopListViews().Any(IsWindowVisible);
     }
 
     public bool SetVisible(bool visible)
     {
         var listViews = FindDesktopListViews();
         if (listViews.Count == 0) return false;
-        foreach (var listView in listViews)
-            ShowWindow(listView, visible ? SwShow : SwHide);
-        return visible
-            ? listViews.Any(IsWindowVisible)
-            : listViews.All(listView => !IsWindowVisible(listView));
+        if (ShellDesktopView.TrySetVisible(visible))
+        {
+            // Recover a list view hidden directly by an older MiniFences build.
+            if (visible)
+                foreach (var listView in listViews) ShowWindow(listView, SwShow);
+            return true;
+        }
+        // Never fall back to directly hiding the view: that desynchronizes Shell.
+        // Showing it remains a best-effort exit/crash recovery path.
+        if (!visible) return false;
+        foreach (var listView in listViews) ShowWindow(listView, SwShow);
+        return listViews.Any(IsWindowVisible);
     }
 
     public bool TryGetScreenPositions(out IReadOnlyList<DesktopIconPosition> positions, out string? error)

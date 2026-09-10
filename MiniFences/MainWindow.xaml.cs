@@ -1224,6 +1224,7 @@ public partial class MainWindow : Window
         {
             CopyFenceGeometry(source, tab);
             tab.IsCollapsed = source.IsCollapsed;
+            tab.IsLocked = source.IsLocked;
             tab.EdgeDock = source.EdgeDock;
             tab.ExpandedHeight = source.ExpandedHeight;
         }
@@ -1391,8 +1392,7 @@ public partial class MainWindow : Window
         var tabs = GetTabs(groupId);
         if (tabs.Count < 2 || tabIndex < 0 || tabIndex >= tabs.Count) return;
         var detached = tabs[tabIndex];
-        detached.TabGroupId = null;
-        RestoreStandaloneGeometry(detached);
+        PrepareDetachedFence(detached);
         detached.Left = Math.Max(0, centerOnCursor ? left - detached.Width / 2 : left);
         detached.Top = Math.Max(0, centerOnCursor ? top - 17 : top);
         var cursor = Forms.Cursor.Position;
@@ -1403,12 +1403,19 @@ public partial class MainWindow : Window
             workArea);
         detached.Left = clamped.X;
         detached.Top = clamped.Y;
-        detached.IsCollapsed = false;
-        detached.EdgeDock = null;
         if (DissolveSingleItemTabGroup(_config, groupId!)) _activeTabByGroup.Remove(groupId!);
         else if (_activeTabByGroup.TryGetValue(groupId!, out var activeId) && activeId == detached.Id) _activeTabByGroup.Remove(groupId!);
         RenderAffectedFenceGroups(tabs.Select(tab => tab.Id).ToArray());
         SaveConfigWithWarning();
+    }
+
+    internal static void PrepareDetachedFence(FenceConfig detached)
+    {
+        detached.TabGroupId = null;
+        RestoreStandaloneGeometry(detached);
+        detached.IsLocked = false;
+        detached.IsCollapsed = false;
+        detached.EdgeDock = null;
     }
 
     private void MergeDraggedTab(string sourceFenceId, FenceConfig target, int? insertionIndex = null)
@@ -1436,17 +1443,11 @@ public partial class MainWindow : Window
     private void UnstackFence(FenceControl control)
     {
         if (string.IsNullOrWhiteSpace(control.Config.TabGroupId)) return;
-        var groupId = control.Config.TabGroupId;
-        var affectedFenceIds = GetTabs(groupId).Select(tab => tab.Id).ToArray();
-        control.Config.TabGroupId = null;
-        RestoreStandaloneGeometry(control.Config);
-        if (DissolveSingleItemTabGroup(_config, groupId)) _activeTabByGroup.Remove(groupId);
-        if (_activeTabByGroup.TryGetValue(groupId, out var activeId) && activeId == control.Config.Id)
-        {
-            _activeTabByGroup.Remove(groupId);
-        }
-        RenderAffectedFenceGroups(affectedFenceIds);
-        SaveConfigWithWarning();
+        control.SyncConfigFromLayout();
+        // Use the drag-detach path so the result is expanded, undocked and
+        // clamped to the screen. Offset it so it does not cover the old header.
+        DetachTab(control.Config.TabGroupId, GetTabIndex(control.Config),
+            control.Config.Left + 40, control.Config.Top + 48);
     }
 
     private IReadOnlyList<string> GetRelatedFenceIds(FenceConfig fence)
