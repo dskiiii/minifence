@@ -41,6 +41,7 @@ try
         "Smoke-test diagnostics must be isolated from the user's production log.");
     TestConfigRoundTrip(root);
     TestDefaultConfig(root);
+    TestManualDropOwnership();
     TestLocalization();
     TestStartupExecutableResolution();
     TestGitHubUpdateParsing();
@@ -837,6 +838,21 @@ static void TestLargeFolderVirtualization(string root)
             window.UpdateLayout();
             Assert(fence.VerticalScrollOffsetForTesting > offsetBeforeDragWheel,
                 "Dragging an item must not prevent the mouse wheel from scrolling Fence contents.");
+            fence.ScrollItemsForTesting(400);
+            var offsetBeforeRefresh = fence.VerticalScrollOffsetForTesting;
+            Assert(offsetBeforeRefresh > 0, "Scroll preservation test must start below the top.");
+            File.WriteAllText(Path.Combine(folder, "newly-dropped.txt"), "new item");
+            fence.LoadFolderItems();
+            window.UpdateLayout();
+            Assert(fence.LoadedItemsForTesting.Count == 601 &&
+                   Math.Abs(fence.VerticalScrollOffsetForTesting - offsetBeforeRefresh) < 1,
+                "Refreshing after a dropped file must update contents without resetting scroll position.");
+            File.Delete(Path.Combine(folder, "newly-dropped.txt"));
+            fence.LoadFolderItems();
+            window.UpdateLayout();
+            Assert(fence.LoadedItemsForTesting.Count == 600 &&
+                   Math.Abs(fence.VerticalScrollOffsetForTesting - offsetBeforeRefresh) < 1,
+                "Refreshing after moving a file out must preserve the source Fence scroll position.");
         }
         catch (Exception ex) { failure = ex; }
         finally
@@ -1581,6 +1597,40 @@ static void TestCustomGridAndPageHotkeys()
            !MainWindow.ShouldApplyForegroundShortcutContext(6, 7, new IntPtr(100), new IntPtr(100)) &&
            !MainWindow.ShouldApplyForegroundShortcutContext(7, 7, new IntPtr(100), new IntPtr(200)),
         "A delayed foreground notification must not overwrite a newer mouse-derived desktop shortcut context.");
+    Assert(MainWindow.IsMouseTransparentOverlay(0x00080020L) &&
+           MainWindow.IsMouseTransparentOverlay(0x080800A0L) &&
+           !MainWindow.IsMouseTransparentOverlay(0x00080000L) &&
+           !MainWindow.IsMouseTransparentOverlay(0x00000020L) &&
+           !MainWindow.IsMouseTransparentOverlay(0x08000080L) &&
+           !MainWindow.IsMouseTransparentOverlay(0),
+        "Only layered click-through overlays may be skipped; ordinary, layered interactive, and no-activate windows must still block desktop shortcuts.");
+    Assert(MainWindow.ShouldSkipNvidiaOverlay("NVIDIA Share", 0x8080080, true, false) &&
+           !MainWindow.ShouldSkipNvidiaOverlay("NVIDIA Share", 0x8080080, true, true) &&
+           !MainWindow.ShouldSkipNvidiaOverlay("NVIDIA Share", 0x8080080, false, false) &&
+           !MainWindow.ShouldSkipNvidiaOverlay("Other application", 0x8080080, true, false) &&
+           !MainWindow.ShouldSkipNvidiaOverlay("NVIDIA Share", 0x80000, true, false),
+        "The reported NVIDIA HUD may be skipped only when native hit testing finds another window; interactive overlays and unknown hits must block shortcuts.");
+}
+
+static void TestManualDropOwnership()
+{
+    var target = new FenceConfig { Id = "a", Kind = FenceConfig.DesktopGroupKind };
+    var other = new FenceConfig { Id = "b", Kind = FenceConfig.DesktopGroupKind };
+    var config = new AppConfig { Fences = [target, other] };
+    const string path = @"C:\Desktop\Dropped.txt";
+    Assert(MainWindow.ShouldAutomaticallyAssignDesktopItem(config, path),
+        "New unassigned desktop items must remain eligible for automatic classification.");
+    // The watcher queued Created before the asynchronous manual drop assigned A.
+    target.AssignedPaths.Add(path);
+    Assert(!MainWindow.ShouldAutomaticallyAssignDesktopItem(config, path.ToLowerInvariant()),
+        "A delayed Created notification must not move a manually assigned item from A to B.");
+    target.AssignedPaths.Clear();
+    other.AssignedPaths.Add(path);
+    Assert(!MainWindow.ShouldAutomaticallyAssignDesktopItem(config, path),
+        "Duplicate watcher notifications must preserve existing ownership in any Fence.");
+    other.AssignedPaths.Clear();
+    Assert(MainWindow.ShouldAutomaticallyAssignDesktopItem(config, path),
+        "Released items must not be suppressed permanently.");
 }
 
 static void TestHeaderDragEdgeTracking()

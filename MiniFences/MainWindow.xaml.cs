@@ -141,6 +141,9 @@ public partial class MainWindow : Window
             $"OS={Environment.OSVersion.VersionString}; DesktopHostMode=" +
             $"{(_useTopLevelDesktopCompatibilityMode ? "TopLevelCompatibility" : "ExplorerChild")}");
         InitializeComponent();
+        TransferProgressBorder.IsVisibleChanged += (_, _) =>
+            Dispatcher.BeginInvoke(UpdateDesktopWindowRegion, DispatcherPriority.Loaded);
+        TransferProgressBorder.SizeChanged += (_, _) => UpdateDesktopWindowRegion();
         FolderItemService.TransferProgressChanged += FolderItemService_TransferProgressChanged;
         FolderItemService.TransferConfirmationRequested += FolderItemService_TransferConfirmationRequested;
         FolderItemService.TransferCompleted += FolderItemService_TransferCompleted;
@@ -168,7 +171,7 @@ public partial class MainWindow : Window
         _desktopContentsRefreshTimer.Tick += (_, _) =>
         {
             _desktopContentsRefreshTimer.Stop();
-            RenderFences();
+            RefreshFenceContents();
         };
         _desktopCompatibilityTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(2) };
         _desktopCompatibilityTimer.Tick += (_, _) =>
@@ -354,72 +357,7 @@ public partial class MainWindow : Window
             DispatcherPriority.ApplicationIdle);
     }
 
-    /* diagnostic helper removed
-    private void InitializeDragDiagnosticMode()
-    {
-        Activate();
-        Topmost = true;
-        var root = Path.Combine(Path.GetTempPath(), "MiniFences-MainWindow-DragDiagnostic");
-        Directory.CreateDirectory(root);
-        Directory.CreateDirectory(Path.Combine(root, "B Target Folder"));
-        var sourcePath = Path.Combine(root, "A Drag Me.txt");
-        if (!File.Exists(sourcePath)) File.WriteAllText(sourcePath, "Temporary drag diagnostic item.");
-        _loc.Language = LocalizationService.Chinese;
-        Workspace.Children.Clear();
-        var config = new FenceConfig
-        {
-            Id = "drag-diagnostic",
-            Title = "拖拽诊断：把文件拖到文件夹",
-            FolderPath = root,
-            Left = 40,
-            Top = 40,
-            Width = 620,
-            Height = 360,
-            ShowPath = true,
-            BackgroundColor = "#F02A3038",
-            HeaderColor = "#FF357EA8"
-        };
-        var fence = new FenceControl(config) { Width = config.Width, Height = config.Height };
-        fence.SetLocalization(_loc);
-        Canvas.SetLeft(fence, config.Left);
-        Canvas.SetTop(fence, config.Top);
-        Workspace.Children.Add(fence);
-        fence.LoadFolderItems();
-        Dispatcher.BeginInvoke(async () =>
-        {
-            await Task.Delay(900);
-            try
-            {
-                var from = fence.GetItemCenterOnScreenForTesting(1);
-                var to = fence.GetItemCenterOnScreenForTesting(0);
-                AppLogger.Log($"Automatic drag diagnostic coordinates. From={from.X:0},{from.Y:0}; To={to.X:0},{to.Y:0}");
-                SetCursorPos((int)Math.Round(from.X), (int)Math.Round(from.Y));
-                await Task.Delay(200);
-                mouse_event(MouseEventLeftDown, 0, 0, 0, UIntPtr.Zero);
-                for (var step = 1; step <= 70; step++)
-                {
-                    var x = from.X + (to.X - from.X) * step / 70;
-                    var y = from.Y + (to.Y - from.Y) * step / 70;
-                    SetCursorPos((int)Math.Round(x), (int)Math.Round(y));
-                    await Task.Delay(10);
-                }
-                await Task.Delay(600);
-                keybd_event((byte)VkEscape, 0, 0, UIntPtr.Zero);
-                keybd_event((byte)VkEscape, 0, KeyEventKeyUp, UIntPtr.Zero);
-                mouse_event(MouseEventLeftUp, 0, 0, 0, UIntPtr.Zero);
-                Title = _dragDiagnosticFrameCaptured
-                    ? "MiniFences Drag Diagnostic - CAPTURED"
-                    : "MiniFences Drag Diagnostic - NO TARGET FRAME";
-            }
-            catch (Exception ex)
-            {
-                Title = "MiniFences Drag Diagnostic - FAILED";
-                AppLogger.LogException("Automatic drag diagnostic failed", ex);
-            }
-        }, DispatcherPriority.ApplicationIdle);
-    }
 
-    */
     private void RenderFences(bool preserveLooseDesktopItems = false)
     {
         var membershipChanged = NormalizeDuplicateDesktopMemberships();
@@ -454,6 +392,23 @@ public partial class MainWindow : Window
         {
             SaveConfigWithWarning();
         }
+    }
+
+    private void RefreshFenceContents()
+    {
+        // File/membership changes do not change the window layout. Keep the
+        // existing controls and their scroll viewers instead of rebuilding them.
+        var membershipChanged = NormalizeDuplicateDesktopMemberships();
+        foreach (var fence in Workspace.Children.OfType<FenceControl>().ToArray())
+            fence.LoadFolderItems();
+        foreach (var icon in Workspace.Children.OfType<DesktopLooseIconControl>().ToArray())
+            Workspace.Children.Remove(icon);
+        RenderLooseDesktopItems();
+        ApplyFenceVisibility();
+        UpdateDesktopWindowRegion();
+        UpdateMenuState();
+        _settingsWindow?.RefreshFromMainWindow();
+        if (membershipChanged) SaveConfigWithWarning();
     }
 
     private void RenderLooseDesktopItems()
@@ -828,7 +783,7 @@ public partial class MainWindow : Window
         control.DesktopItemDragStarted += (_, _) => BeginDesktopItemDrag();
         control.DesktopItemDragEnded += (_, _) => EndDesktopItemDrag();
         control.ItemsChanged += (_, _) => Dispatcher.BeginInvoke(
-            () => RenderFences(),
+            () => RefreshFenceContents(),
             DispatcherPriority.Background);
         control.ContentRefreshed += (_, _) => _settingsWindow?.RefreshFromMainWindow();
         control.ItemSelectionRequested += (_, _) => HandleFenceItemSelection(control);
@@ -1571,7 +1526,7 @@ public partial class MainWindow : Window
             }
             return movedPaths.Length > 0;
         });
-        RenderFences();
+        RefreshFenceContents();
         SaveConfigWithWarning();
         RefreshUndoCommands();
     }
@@ -1625,7 +1580,7 @@ public partial class MainWindow : Window
             $"移动到 Fence“{target.Title}”", _folderItemService, distinctPaths, destination,
             FolderTransferOperation.Move);
         _activeTabByGroup[groupId] = target.Id;
-        RenderFences();
+        RefreshFenceContents();
         SaveConfigWithWarning();
         RefreshUndoCommands();
         if (result.Errors.Count > 0)
@@ -1687,7 +1642,7 @@ public partial class MainWindow : Window
                 return removed > 0;
             })) return;
         AppLogger.Log($"Released {removed} desktop item(s) from Fence membership.");
-        RenderFences();
+        RefreshFenceContents();
         SaveConfigWithWarning();
         RefreshUndoCommands();
     }
@@ -1765,26 +1720,7 @@ public partial class MainWindow : Window
         ActivateDragFeedback();
     }
 
-    /* diagnostic helper removed
-    private void CaptureDragDiagnosticFrame()
-    {
-        try
-        {
-            var bounds = Forms.SystemInformation.VirtualScreen;
-            using var bitmap = new System.Drawing.Bitmap(bounds.Width, bounds.Height);
-            using var graphics = System.Drawing.Graphics.FromImage(bitmap);
-            graphics.CopyFromScreen(bounds.Left, bounds.Top, 0, 0, bitmap.Size);
-            var path = Path.Combine(Path.GetTempPath(), "MiniFences-MainWindow-DragDiagnostic-Hover.png");
-            bitmap.Save(path, System.Drawing.Imaging.ImageFormat.Png);
-            AppLogger.Log($"Drag diagnostic hover frame captured: {path}");
-        }
-        catch (Exception ex)
-        {
-            AppLogger.LogException("Drag diagnostic frame capture failed", ex);
-        }
-    }
 
-    */
     internal void ShowDragHint(
         string target,
         ImageSource? icon = null,
@@ -1811,9 +1747,7 @@ public partial class MainWindow : Window
         if (!string.Equals(_dragTargetHintWindow.TargetText, targetText, StringComparison.Ordinal))
             AppLogger.Log($"Showing drag move target: {target}");
         _dragTargetHintWindow.ShowTarget(targetText);
-/* obsolete localized fallback
-            _loc.IsChinese ? $"移动到 {target}" : $"Move to {target}");
-*/
+
         ActivateDragFeedback();
     }
 
@@ -2078,10 +2012,7 @@ public partial class MainWindow : Window
             ? requestedEffect
             : System.Windows.DragDropEffects.None;
         if (hasPaths)
-            ShowDragSourceHint(paths, e.Data); /* old desktop target label disabled
-                _loc.IsChinese ? "桌面" : "Desktop",
-                paths,
-                e.Data); */
+            ShowDragSourceHint(paths, e.Data);
         else
             HideDragHint();
         e.Handled = true;
@@ -2132,7 +2063,7 @@ public partial class MainWindow : Window
                 ReleaseDesktopMembership(positionedPaths.ToHashSet(StringComparer.OrdinalIgnoreCase));
             else
             {
-                RenderFences();
+                RefreshFenceContents();
                 SaveConfigWithWarning();
             }
             e.Effects = requestedEffect;
@@ -2692,6 +2623,8 @@ public partial class MainWindow : Window
                 TransferProgressBorder.Visibility = Visibility.Collapsed;
                 return;
             }
+            // Fast operations should complete silently without a flashing panel.
+            if ((DateTime.UtcNow - _transferStartedAt[progress.TransferId]).TotalMilliseconds < 700) return;
             TransferProgressBorder.Visibility = Visibility.Visible;
             _lastTransferCompleted = null;
             CancelTransferButton.Content = string.Equals(_loc.Language, LocalizationService.Chinese, StringComparison.OrdinalIgnoreCase)
@@ -2765,6 +2698,12 @@ public partial class MainWindow : Window
     {
         Dispatcher.BeginInvoke(() =>
         {
+            if (!completed.WasCanceled && completed.Result.Errors.Count == 0 && completed.Result.Skipped == 0)
+            {
+                _lastTransferCompleted = null;
+                TransferProgressBorder.Visibility = Visibility.Collapsed;
+                return;
+            }
             _lastTransferCompleted = completed;
             var chinese = string.Equals(_loc.Language, LocalizationService.Chinese, StringComparison.OrdinalIgnoreCase);
             TransferProgressBorder.Visibility = Visibility.Visible;
@@ -4035,6 +3974,8 @@ public partial class MainWindow : Window
     {
         var mainHandle = new WindowInteropHelper(this).Handle;
         var foundWindow = IntPtr.Zero;
+        var hitWindow = WindowFromPoint(new NativePoint(screenPoint.X, screenPoint.Y));
+        var hitRoot = hitWindow == IntPtr.Zero ? IntPtr.Zero : GetAncestor(hitWindow, GaRoot);
         EnumWindows((window, _) =>
         {
             // The compatibility-mode MiniFences HWND can be returned above a
@@ -4055,6 +3996,22 @@ public partial class MainWindow : Window
                 (uint)Marshal.SizeOf<uint>());
             if (cloaked != 0) return true;
 
+            // Layered, mouse-transparent overlays (for example recording HUDs)
+            // do not receive the click, even when their rectangle covers it.
+            // Continue underneath them so real application windows still block
+            // desktop shortcuts.
+            if (IsMouseTransparentOverlay(GetWindowLongPtr(window, GwlExStyle).ToInt64())) return true;
+            // NVIDIA's per-pixel transparent HUD lacks WS_EX_TRANSPARENT.
+            // Only skip its rectangle when native hit testing finds a different
+            // window; an interactive/open overlay must continue to block input.
+            if (string.Equals(GetWindowClassName(window), "CEF-OSC-WIDGET", StringComparison.Ordinal))
+            {
+                GetWindowThreadProcessId(window, out var overlayProcessId);
+                if (ShouldSkipNvidiaOverlay(GetProcessName(overlayProcessId),
+                        GetWindowLongPtr(window, GwlExStyle).ToInt64(),
+                        hitRoot != IntPtr.Zero, hitRoot == window)) return true;
+            }
+
             foundWindow = window;
             return false;
         }, IntPtr.Zero);
@@ -4064,6 +4021,15 @@ public partial class MainWindow : Window
         var desktopHost = FindDesktopViewHost();
         return IsWindowInHierarchy(topmostUnderlyingWindow, desktopHost);
     }
+
+    internal static bool IsMouseTransparentOverlay(long extendedStyle) =>
+        (extendedStyle & (0x00080000L | 0x00000020L)) == (0x00080000L | 0x00000020L);
+
+    internal static bool ShouldSkipNvidiaOverlay(string processName, long extendedStyle,
+        bool nativeHitKnown, bool nativeHitIsOverlay) =>
+        nativeHitKnown && !nativeHitIsOverlay &&
+        string.Equals(processName, "NVIDIA Share", StringComparison.OrdinalIgnoreCase) &&
+        (extendedStyle & 0x08080080L) == 0x08080080L;
 
     private IntPtr KeyboardHookProc(int code, IntPtr wParam, IntPtr lParam)
     {
@@ -4831,7 +4797,7 @@ public partial class MainWindow : Window
                     GetWindowThreadProcessId(shortcutHitWindow, out var shortcutHitProcessId);
                     var shortcutHitDescription = shortcutHitWindow == IntPtr.Zero
                         ? "none"
-                        : $"{GetProcessName(shortcutHitProcessId)}/{GetWindowClassName(shortcutHitWindow)}";
+                        : $"{GetProcessName(shortcutHitProcessId)}/{GetWindowClassName(shortcutHitWindow)}; ExStyle=0x{GetWindowLongPtr(shortcutHitWindow, GwlExStyle).ToInt64():X}";
                     RecordDesktopShortcutMouseContext(pointIsDesktop,
                         pointIsDesktop
                             ? $"mouse clicked exposed desktop surface ({shortcutHitDescription})"
@@ -5470,6 +5436,21 @@ public partial class MainWindow : Window
                 }
             }
 
+            if (TransferProgressBorder.IsVisible && TransferProgressBorder.ActualWidth > 0 &&
+                TransferProgressBorder.ActualHeight > 0)
+            {
+                var origin = TransferProgressBorder.TranslatePoint(new System.Windows.Point(), this);
+                var panelRegion = CreateRectRgn(
+                    (int)Math.Floor(origin.X * pixelsPerDip.X),
+                    (int)Math.Floor(origin.Y * pixelsPerDip.Y),
+                    (int)Math.Ceiling((origin.X + TransferProgressBorder.ActualWidth) * pixelsPerDip.X),
+                    (int)Math.Ceiling((origin.Y + TransferProgressBorder.ActualHeight) * pixelsPerDip.Y));
+                if (panelRegion != IntPtr.Zero)
+                {
+                    CombineRgn(combinedRegion, combinedRegion, panelRegion, RgnOr);
+                    DeleteObject(panelRegion);
+                }
+            }
             if (SetWindowRgn(handle, combinedRegion, true) != 0)
             {
                 combinedRegion = IntPtr.Zero;
@@ -5523,7 +5504,9 @@ public partial class MainWindow : Window
                 new System.Drawing.Point((int)Math.Round(screenPoint.X), (int)Math.Round(screenPoint.Y)),
                 out var workspacePoint)) return false;
 
-        var hit = false;
+        var hit = TransferProgressBorder.IsVisible &&
+            new Rect(TransferProgressBorder.TranslatePoint(new System.Windows.Point(), Workspace),
+                TransferProgressBorder.RenderSize).Contains(workspacePoint);
 
         foreach (var fence in Workspace.Children.OfType<FenceControl>())
         {
@@ -5885,10 +5868,18 @@ public partial class MainWindow : Window
     private void ProcessPendingAutoOrganization()
     {
         _autoOrganizeTimer.Stop();
+        // A desktop drop copies/moves files before assigning their final Fence.
+        // Do not rebuild controls while that asynchronous operation is running.
+        if (FolderItemService.HasActiveTransfers)
+        {
+            _autoOrganizeTimer.Start();
+            return;
+        }
         var pendingPaths = _pendingAutoOrganizePaths.ToArray();
         _pendingAutoOrganizePaths.Clear();
         foreach (var path in pendingPaths)
         {
+            if (!ShouldAutomaticallyAssignDesktopItem(_config, path)) continue;
             if (!File.Exists(path) && !Directory.Exists(path))
             {
                 continue;
@@ -6126,6 +6117,10 @@ public partial class MainWindow : Window
                 "MiniFences", MessageBoxButton.OK, MessageBoxImage.Warning);
         }
     }
+
+    internal static bool ShouldAutomaticallyAssignDesktopItem(AppConfig config, string path) =>
+        !config.Fences.Any(fence => fence.IsDesktopGroup &&
+            fence.AssignedPaths.Contains(path, StringComparer.OrdinalIgnoreCase));
 
     private void ExitApplication()
     {

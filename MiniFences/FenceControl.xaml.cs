@@ -1329,7 +1329,31 @@ public partial class FenceControl : System.Windows.Controls.UserControl
     [DllImport("user32.dll", SetLastError = true)]
     private static extern int SetWindowLong(IntPtr hWnd, int index, int newStyle);
 
+    private string? _lastScrollContentPath;
+
     public void LoadFolderItems()
+    {
+        var contentPath = GetPortalPath();
+        var viewer = FindVisualChild<ScrollViewer>(ItemsList);
+        var preserveScroll = string.Equals(_lastScrollContentPath, contentPath, StringComparison.OrdinalIgnoreCase);
+        var vertical = preserveScroll ? viewer?.VerticalOffset ?? 0 : 0;
+        var horizontal = preserveScroll ? viewer?.HorizontalOffset ?? 0 : 0;
+        LoadFolderItemsCore();
+        _lastScrollContentPath = GetPortalPath();
+        if (!string.Equals(contentPath, _lastScrollContentPath, StringComparison.OrdinalIgnoreCase))
+            vertical = horizontal = 0;
+        if (IsLoaded)
+        {
+            ItemsList.UpdateLayout();
+            viewer = FindVisualChild<ScrollViewer>(ItemsList);
+            viewer?.ScrollToVerticalOffset(vertical);
+            viewer?.ScrollToHorizontalOffset(horizontal);
+            ItemsList.UpdateLayout();
+            UpdateExpandedItemLabelOverlay();
+        }
+    }
+
+    private void LoadFolderItemsCore()
     {
         if (Config.IsDesktopGroup)
         {

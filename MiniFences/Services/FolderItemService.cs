@@ -20,6 +20,7 @@ public sealed class FolderItemService
     private const string RecycleBinClsid = "{645FF040-5081-101B-9F08-00AA002F954E}";
     private static readonly SemaphoreSlim TransferGate = new(1, 1);
     private static readonly ConcurrentDictionary<Guid, CancellationTokenSource> ActiveTransfers = new();
+    internal static bool HasActiveTransfers => !ActiveTransfers.IsEmpty;
     public static event EventHandler<FolderTransferProgress>? TransferProgressChanged;
     public static event EventHandler<FolderTransferConfirmationEventArgs>? TransferConfirmationRequested;
     public static event EventHandler<FolderTransferCompletedEventArgs>? TransferCompleted;
